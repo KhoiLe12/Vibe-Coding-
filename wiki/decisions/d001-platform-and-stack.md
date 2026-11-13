@@ -30,5 +30,5 @@ Must ship on **iOS and Android** (raw/ideas/2026-10-26-platform-and-transpose.md
 One codebase for both stores; C++ build setup for Android NDK and iOS is a one-time M0 cost; mic permissions and audio-session handling (interruptions, Bluetooth, background) need per-platform code in a thin plugin.
 
 ## Follow-ups
-- Set up a CI build for both platforms in M0. *(2026-10-26: workflow written, see [[d006-native-build]]; not yet run — no remote yet.)*
+- Set up a CI build for both platforms in M0. *(Done: workflow in [[d006-native-build]]; first run green on 2026-11-13 — Android debug APK and unsigned iOS build both succeed.)*
 - *Update 2026-10-26* (raw/ideas/2026-10-26-scope.md): the [[loop-pedal]] needs full-duplex audio with low, stable latency. At the end of M2, a **go/no-go gate** measures round-trip latency on one real iPhone and one mid-range Android. Target: ≤ 30 ms on wired headphones, with no drift over 10 minutes ([[audio-latency]]). If miniaudio misses the target, switch that platform to Oboe or AVAudioEngine behind the same C++ interface before starting M5.

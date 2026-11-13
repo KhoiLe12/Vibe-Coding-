@@ -37,6 +37,7 @@ All bootstrap decisions made. **Milestone 0 in progress** (2026-10-26):
 - [x] Folders, `CLAUDE.md`, seed wiki
 - [x] `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `CONTRIBUTING.md` ([[d004-licence]])
 - [x] Flutter app + C++ core via FFI ([[d006-native-build]], [[audio-engine]]); hello tone verified on macOS host
-- [ ] CI builds both platforms — workflow written, needs a GitHub remote to run
-- [ ] Hello tone on a real iPhone and a real Android phone
+- [x] CI builds both platforms — first run green 2026-11-13 (github.com/KhoiLe12/Vibe-Coding-, run 43402746413)
+- [x] Hello tone on a real iPhone — 2026-11-13, iPhone 16 Pro Max (iOS 26.6.2), release build
+- [ ] Hello tone on a real Android phone — **deferred** 2026-11-13 (no Android phone on hand); do this before M1 is called done
 - [x] Lint passes (`tools/wiki_lint.py`: 0 errors)

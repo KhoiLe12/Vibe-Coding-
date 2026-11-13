@@ -42,4 +42,6 @@ miniaudio ([[d001-platform-and-stack]], [[d004-licence]]); build via [[d006-nati
 
 ## Verified
 - 2026-10-26, macOS host: core compiles through the build hook; offline tone tests pass; `engine_device_test` opened the real Core Audio output and received callbacks; Flutter widget test reads the version over FFI.
-- Not yet verified: Android and iOS builds (CI), hello tone on real phones.
+- 2026-11-13, CI: core compiles and links for Android (debug APK) and iOS (unsigned build); host tests pass on Linux.
+- 2026-11-13, real iPhone 16 Pro Max (iOS 26.6.2), release build: tone audible; A3/A4/A5 pitch and volume slider change live; callback count keeps rising.
+- Not yet verified: hello tone on a real Android phone.

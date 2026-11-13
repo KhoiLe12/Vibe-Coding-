@@ -43,3 +43,18 @@
 - pages touched: [[tempo]], [[undo-history]], [[export]]
 - notes: `tools/wiki_lint.py` 0 errors. Open findings for the human: tempo/undo-history/export lack acceptance criteria;
   [[q-transpose-scope]] still open (needed before M4); copyright holder and app bundle id are placeholders. Next source to ingest: Signalsmith Stretch docs.
+
+## [2026-11-13] build | Repo published; first CI run green
+- pages touched: [[overview]], [[d001-platform-and-stack]], [[audio-engine]]
+- notes: pushed to github.com/KhoiLe12/Vibe-Coding- (main). CI: wiki-lint, tests, Android APK and iOS build all pass.
+  Only M0 item left: hello tone on a real iPhone and Android phone.
+
+## [2026-11-13] build | Hello tone verified on a real iPhone
+- pages touched: [[overview]], [[audio-engine]]
+- notes: iPhone 16 Pro Max, iOS 26.6.2, Xcode 27.2, free Apple ID (Personal Team), `flutter run --release`. Human confirmed the tone,
+  pitch steps and volume all work. Only M0 item left: the same on a real Android phone.
+
+## [2026-11-13] decision | Android phone check deferred
+- pages touched: [[overview]]
+- notes: Human has no Android phone on hand. M0's exit criteria (lint, CI on both platforms) are met, so work moves to M1.
+  The real-Android hello-tone check stays open and must be done before M1 is marked done.

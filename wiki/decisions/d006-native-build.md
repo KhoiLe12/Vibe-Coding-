@@ -29,5 +29,5 @@ tags: [build, cpp, m0]
 - Host (macOS/Linux) `dart test` exercises the real C++ code, so CI can test the core without phones.
 - Generating bindings locally needs libclang (Command Line Tools path works on macOS).
 - If the M2 latency gate forces Oboe/AVAudioEngine ([[d001-platform-and-stack]]), they plug in behind the same C API; the hook gains per-OS sources.
-- App identifiers are `dev.pocketstudio.pocket_studio` (Android `applicationId`, iOS bundle id). **Placeholder** — confirm with the human before store listings (M8).
+- App identifiers: Android `applicationId` `dev.pocketstudio.pocket_studio`, iOS bundle id `dev.pocketstudio.pocketStudio`. **Placeholder** — confirm with the human before store listings (M8).
 - CI: GitHub Actions (`.github/workflows/ci.yml`) runs wiki lint, core + widget tests, a debug APK build and an unsigned iOS build, with Flutter pinned to 3.47.8.
