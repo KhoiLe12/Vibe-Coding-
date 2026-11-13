@@ -1,0 +1,23 @@
+# Run with `dart run ffigen --config ffigen.yaml`.
+name: PocketAudioBindings
+description: |
+  Bindings for `src/pocket_audio.h`.
+
+  Regenerate bindings with `dart run ffigen --config ffigen.yaml`.
+output: 'lib/pocket_audio_bindings_generated.dart'
+headers:
+  entry-points:
+    - 'src/pocket_audio.h'
+  include-directives:
+    - 'src/pocket_audio.h'
+functions:
+  include:
+    - 'ps_.*'
+macros:
+  include:
+    - 'PS_OK'
+    - 'PS_ERROR_.*'
+ffi-native:
+comments:
+  style: any
+  length: full

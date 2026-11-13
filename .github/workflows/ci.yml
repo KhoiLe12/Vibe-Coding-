@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  FLUTTER_VERSION: 3.47.8
+
+jobs:
+  wiki-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/wiki_lint.py
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Audio core tests (C++ built for the host via build hook)
+        working-directory: app/packages/pocket_audio
+        run: |
+          dart pub get
+          dart analyze --fatal-infos
+          dart test
+      - name: App analyze + widget tests
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze --fatal-infos
+          flutter test
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build debug APK
+        working-directory: app
+        run: flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocket-studio-debug-apk
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build iOS app (unsigned)
+        working-directory: app
+        run: flutter build ios --debug --no-codesign
