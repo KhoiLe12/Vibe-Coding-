@@ -2,26 +2,41 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:pocket_audio/pocket_audio.dart';
+import 'package:path_provider/path_provider.dart';
+
+import 'screens/record_screen.dart';
+import 'screens/take_screen.dart';
+import 'takes/take_store.dart';
+import 'widgets/waveform.dart';
 
 void main() {
   LicenseRegistry.addLicense(_thirdPartyLicences);
-  runApp(const PocketStudioApp());
+  runApp(PocketStudioApp(openStore: _openDefaultStore));
+}
+
+Future<TakeStore> _openDefaultStore() async {
+  final docs = await getApplicationDocumentsDirectory();
+  return TakeStore(Directory('${docs.path}/projects/inbox'));
 }
 
 /// Licences of bundled native code (THIRD_PARTY_NOTICES.md). Flutter's own
 /// packages register theirs automatically.
 Stream<LicenseEntry> _thirdPartyLicences() async* {
-  final miniaudio = await rootBundle.loadString('assets/licenses/miniaudio.txt');
+  final miniaudio = await rootBundle.loadString(
+    'assets/licenses/miniaudio.txt',
+  );
   yield LicenseEntryWithLineBreaks(['miniaudio'], miniaudio);
 }
 
 class PocketStudioApp extends StatelessWidget {
-  const PocketStudioApp({super.key});
+  const PocketStudioApp({super.key, required this.openStore});
+
+  final Future<TakeStore> Function() openStore;
 
   @override
   Widget build(BuildContext context) {
@@ -33,64 +48,46 @@ class PocketStudioApp extends StatelessWidget {
         brightness: Brightness.dark,
         useMaterial3: true,
       ),
-      home: const HelloToneScreen(),
+      home: TakesScreen(openStore: openStore),
     );
   }
 }
 
-/// M0 smoke test: proves the Flutter UI drives the C++ core on a real device.
-class HelloToneScreen extends StatefulWidget {
-  const HelloToneScreen({super.key});
+/// Home: the list of takes, newest first, and the record button.
+class TakesScreen extends StatefulWidget {
+  const TakesScreen({super.key, required this.openStore});
+
+  final Future<TakeStore> Function() openStore;
 
   @override
-  State<HelloToneScreen> createState() => _HelloToneScreenState();
+  State<TakesScreen> createState() => _TakesScreenState();
 }
 
-class _HelloToneScreenState extends State<HelloToneScreen> {
-  static const _notes = {'A3': 220.0, 'A4': 440.0, 'A5': 880.0};
-
-  String _note = 'A4';
-  double _amplitude = 0.2;
-  bool _playing = false;
-  String? _error;
-  Timer? _statusTimer;
+class _TakesScreenState extends State<TakesScreen> {
+  TakeStore? _store;
+  List<Take> _takes = const [];
 
   @override
-  void dispose() {
-    _statusTimer?.cancel();
-    PocketAudio.stop();
-    super.dispose();
+  void initState() {
+    super.initState();
+    widget.openStore().then((store) {
+      if (!mounted) return;
+      _store = store;
+      _refresh();
+    });
   }
 
-  void _applyTone() => PocketAudio.setTone(
-        frequencyHz: _notes[_note]!,
-        amplitude: _playing ? _amplitude : 0,
-      );
+  void _refresh() => setState(() => _takes = _store?.list() ?? const []);
 
-  void _toggle() {
-    setState(() {
-      _error = null;
-      if (_playing) {
-        _playing = false;
-        _applyTone(); // ramps down; the device keeps running
-        return;
-      }
-      try {
-        if (!PocketAudio.isRunning) PocketAudio.start();
-        _playing = true;
-        _applyTone();
-        _statusTimer ??= Timer.periodic(
-          const Duration(milliseconds: 250),
-          (_) => setState(() {}),
-        );
-      } on PocketAudioException catch (e) {
-        _error = e.message;
-      }
-    });
+  Future<void> _push(Widget screen) async {
+    await Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => screen));
+    if (mounted) _refresh();
   }
 
   @override
   Widget build(BuildContext context) {
+    final store = _store;
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
@@ -109,73 +106,50 @@ class _HelloToneScreenState extends State<HelloToneScreen> {
           ),
         ],
       ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text('Hello tone', style: theme.textTheme.headlineSmall),
-              const SizedBox(height: 4),
-              Text('Audio core ${PocketAudio.version}',
-                  style: theme.textTheme.bodySmall),
-              const Spacer(),
-              Center(
-                child: SizedBox.square(
-                  dimension: 160,
-                  child: FilledButton(
-                    key: const Key('toggle'),
-                    style: FilledButton.styleFrom(shape: const CircleBorder()),
-                    onPressed: _toggle,
-                    child: Icon(_playing ? Icons.stop : Icons.play_arrow,
-                        size: 72),
-                  ),
-                ),
+      body: store == null
+          ? const Center(child: CircularProgressIndicator())
+          : _takes.isEmpty
+          ? Center(
+              child: Text(
+                'No takes yet.\nTap the red button to record.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyLarge,
               ),
-              const Spacer(),
-              SegmentedButton<String>(
-                segments: [
-                  for (final note in _notes.keys)
-                    ButtonSegment(value: note, label: Text(note)),
-                ],
-                selected: {_note},
-                onSelectionChanged: (s) {
-                  setState(() => _note = s.single);
-                  _applyTone();
-                },
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  const Icon(Icons.volume_down),
-                  Expanded(
-                    child: Slider(
-                      value: _amplitude,
-                      max: 0.5,
-                      onChanged: (v) {
-                        setState(() => _amplitude = v);
-                        _applyTone();
-                      },
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.only(bottom: 120),
+              itemCount: _takes.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, i) {
+                final take = _takes[i];
+                return ListTile(
+                  leading: const Icon(Icons.graphic_eq),
+                  title: Text(takeTitle(take)),
+                  trailing: Text(
+                    formatDuration(take.duration),
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
-                  const Icon(Icons.volume_up),
-                ],
+                  onTap: () => _push(TakeScreen(store: store, take: take)),
+                );
+              },
+            ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButton: store == null
+          ? null
+          : SizedBox.square(
+              dimension: 80,
+              child: FloatingActionButton.large(
+                key: const Key('new-take'),
+                tooltip: 'Record',
+                backgroundColor: theme.colorScheme.error,
+                foregroundColor: theme.colorScheme.onError,
+                shape: const CircleBorder(),
+                onPressed: () => _push(RecordScreen(store: store)),
+                child: const Icon(Icons.mic, size: 40),
               ),
-              const SizedBox(height: 8),
-              Text(
-                _error ??
-                    (PocketAudio.isRunning
-                        ? '${PocketAudio.sampleRate} Hz · '
-                            '${PocketAudio.callbackCount} callbacks'
-                        : 'Engine stopped'),
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodySmall?.copyWith(
-                    color: _error != null ? theme.colorScheme.error : null),
-              ),
-            ],
-          ),
-        ),
-      ),
+            ),
     );
   }
 }

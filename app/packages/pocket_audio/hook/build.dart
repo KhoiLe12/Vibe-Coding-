@@ -23,7 +23,11 @@ void main(List<String> args) async {
       assetName: '${packageName}_bindings_generated.dart',
       sources: [
         'src/engine.cpp',
+        'src/player.cpp',
+        'src/recorder.cpp',
+        'src/wav_writer.cpp',
         isApple ? 'src/miniaudio_impl.mm' : 'src/miniaudio_impl.cpp',
+        isApple ? 'src/platform_apple.mm' : 'src/platform_other.cpp',
       ],
       includes: ['src'],
       std: 'c++17',

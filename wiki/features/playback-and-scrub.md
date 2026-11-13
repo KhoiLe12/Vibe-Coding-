@@ -7,7 +7,7 @@ tags: [m2, transport]
 ---
 # Playback and scrub
 
-Milestone M2.
+Milestone M2. *Pulled forward into M1 (2026-11-13, human needed it to check long takes):* tap/drag the waveform to jump (seek on release, silent while dragging) and ±5 s buttons; jumps fade out then in so they don't click. Audible scrub, hold-to-rewind and the acceptance criteria below remain M2.
 
 ## Behaviour
 - Play/pause.

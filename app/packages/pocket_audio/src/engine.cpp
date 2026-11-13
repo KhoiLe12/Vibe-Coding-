@@ -1,13 +1,17 @@
 // Copyright 2026 The Pocket Studio Authors
 // SPDX-License-Identifier: Apache-2.0
 //
-// M0 audio engine: one output device playing the test tone.
+// Audio engine: one device, output-only or full duplex (mic + output).
 // See wiki/components/audio-engine.md.
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
+#include "platform.h"
+#include "player.h"
 #include "pocket_audio.h"
+#include "recorder.h"
 #include "third_party/miniaudio/miniaudio.h"
 #include "tone_generator.h"
 
@@ -21,19 +25,68 @@ struct Engine {
   ma_device device;
   ps::ToneGenerator tone;
   std::atomic<int64_t> callbacks{0};
+  std::atomic<int32_t> interruptions{0};
   bool running = false;
+  bool withInput = false;
 };
 
 Engine g_engine;
-// Guards start/stop only. Never taken on the audio thread.
+ps::Recorder g_recorder;
+ps::Player g_player;
+// Guards start/stop/restart. Never taken on the audio thread.
 std::mutex g_controlMutex;
 
-void dataCallback(ma_device* device, void* output, const void* /*input*/,
+void dataCallback(ma_device* device, void* output, const void* input,
                   ma_uint32 frameCount) {
   auto* engine = static_cast<Engine*>(device->pUserData);
+  if (input != nullptr) {
+    g_recorder.process(static_cast<const float*>(input), frameCount);
+  }
   engine->tone.render(static_cast<float*>(output), frameCount,
                       device->playback.channels, device->sampleRate);
+  g_player.render(static_cast<float*>(output), frameCount,
+                  device->playback.channels);
   engine->callbacks.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Called by miniaudio on the main thread (iOS). Core Audio stops the device
+// when a phone call or another app interrupts; restart when it ends. A take
+// in progress just has a gap and continues ("pause" by the OS).
+void notificationCallback(const ma_device_notification* n) {
+  if (n->type == ma_device_notification_type_interruption_began) {
+    g_engine.interruptions.fetch_add(1);
+    return;
+  }
+  if (n->type != ma_device_notification_type_interruption_ended) return;
+  std::lock_guard<std::mutex> lock(g_controlMutex);
+  if (!g_engine.running) return;
+  ps::platform::activateSession(g_engine.withInput);
+  ma_device_start(&g_engine.device);
+}
+
+ma_result initDevice(bool withInput, int presetAttempt) {
+  ma_device_config config = ma_device_config_init(
+      withInput ? ma_device_type_duplex : ma_device_type_playback);
+  config.playback.format = ma_format_f32;
+  config.playback.channels = kChannels;
+  config.capture.format = ma_format_f32;
+  config.capture.channels = 1;  // mono takes (d007)
+  config.sampleRate = kSampleRate;
+  config.performanceProfile = ma_performance_profile_low_latency;
+  config.dataCallback = dataCallback;
+  config.notificationCallback = notificationCallback;
+  config.pUserData = &g_engine;
+  // Android: raw mic first; some phones only offer voice recognition, which
+  // is the next least processed preset.
+  config.aaudio.usage = ma_aaudio_usage_media;
+  if (presetAttempt == 0) {
+    config.aaudio.inputPreset = ma_aaudio_input_preset_unprocessed;
+    config.opensl.recordingPreset = ma_opensl_recording_preset_voice_unprocessed;
+  } else {
+    config.aaudio.inputPreset = ma_aaudio_input_preset_voice_recognition;
+    config.opensl.recordingPreset = ma_opensl_recording_preset_voice_recognition;
+  }
+  return ma_device_init(&g_engine.context, &config, &g_engine.device);
 }
 
 }  // namespace
@@ -41,33 +94,32 @@ void dataCallback(ma_device* device, void* output, const void* /*input*/,
 extern "C" {
 
 const char* ps_version(void) {
-  return "0.1.0 (miniaudio " MA_VERSION_STRING ")";
+  return "0.2.0 (miniaudio " MA_VERSION_STRING ")";
 }
 
-int32_t ps_engine_start(void) {
+int32_t ps_engine_start_ex(int32_t with_input) {
   std::lock_guard<std::mutex> lock(g_controlMutex);
   if (g_engine.running) return PS_ERROR_ALREADY_RUNNING;
+  const bool withInput = with_input != 0;
+  if (withInput && ps::platform::micPermission() != PS_MIC_GRANTED) {
+    return PS_ERROR_NO_PERMISSION;
+  }
+  if (!ps::platform::activateSession(withInput)) return PS_ERROR_DEVICE;
 
   ma_context_config contextConfig = ma_context_config_init();
-  // iOS: play even when the ring/silent switch is on. Recording (M1) will
-  // switch this to play-and-record with measurement mode
-  // (wiki/concepts/recording-diverse-material.md).
-  contextConfig.coreaudio.sessionCategory = ma_ios_session_category_playback;
+  // iOS: the session is configured in platform_apple.mm; miniaudio must not
+  // override the category/mode or (de)activate it.
+  contextConfig.coreaudio.sessionCategory = ma_ios_session_category_none;
+  contextConfig.coreaudio.noAudioSessionActivate = MA_TRUE;
+  contextConfig.coreaudio.noAudioSessionDeactivate = MA_TRUE;
   if (ma_context_init(nullptr, 0, &contextConfig, &g_engine.context) !=
       MA_SUCCESS) {
     return PS_ERROR_DEVICE;
   }
 
-  ma_device_config config = ma_device_config_init(ma_device_type_playback);
-  config.playback.format = ma_format_f32;
-  config.playback.channels = kChannels;
-  config.sampleRate = kSampleRate;
-  config.performanceProfile = ma_performance_profile_low_latency;
-  config.dataCallback = dataCallback;
-  config.pUserData = &g_engine;
-
-  if (ma_device_init(&g_engine.context, &config, &g_engine.device) !=
-      MA_SUCCESS) {
+  ma_result r = initDevice(withInput, 0);
+  if (r != MA_SUCCESS && withInput) r = initDevice(withInput, 1);
+  if (r != MA_SUCCESS) {
     ma_context_uninit(&g_engine.context);
     return PS_ERROR_DEVICE;
   }
@@ -77,21 +129,31 @@ int32_t ps_engine_start(void) {
     ma_context_uninit(&g_engine.context);
     return PS_ERROR_DEVICE;
   }
+  g_engine.withInput = withInput;
   g_engine.running = true;
   return PS_OK;
 }
+
+int32_t ps_engine_start(void) { return ps_engine_start_ex(0); }
 
 void ps_engine_stop(void) {
   std::lock_guard<std::mutex> lock(g_controlMutex);
   if (!g_engine.running) return;
   ma_device_uninit(&g_engine.device);
   ma_context_uninit(&g_engine.context);
+  ps::platform::deactivateSession();
   g_engine.running = false;
+  g_engine.withInput = false;
 }
 
 int32_t ps_engine_is_running(void) {
   std::lock_guard<std::mutex> lock(g_controlMutex);
   return g_engine.running ? 1 : 0;
+}
+
+int32_t ps_engine_has_input(void) {
+  std::lock_guard<std::mutex> lock(g_controlMutex);
+  return g_engine.running && g_engine.withInput ? 1 : 0;
 }
 
 int32_t ps_engine_sample_rate(void) {
@@ -103,6 +165,14 @@ int32_t ps_engine_sample_rate(void) {
 int64_t ps_engine_callback_count(void) {
   return g_engine.callbacks.load(std::memory_order_relaxed);
 }
+
+int32_t ps_engine_interruption_count(void) {
+  return g_engine.interruptions.load();
+}
+
+int32_t ps_mic_permission(void) { return ps::platform::micPermission(); }
+
+void ps_mic_request_permission(void) { ps::platform::requestMicPermission(); }
 
 void ps_tone_set(double frequency_hz, float amplitude) {
   g_engine.tone.set(frequency_hz, amplitude);
@@ -116,6 +186,88 @@ void ps_tone_render_offline(float* out, int32_t frames, int32_t channels,
   tone.render(out, static_cast<uint32_t>(frames),
               static_cast<uint32_t>(channels),
               static_cast<uint32_t>(sample_rate));
+}
+
+// ---- Recorder ----
+
+int32_t ps_peaks_block_frames(void) {
+  return static_cast<int32_t>(ps::Recorder::kPeakBlock);
+}
+
+void ps_input_process(const float* mono, int32_t frames) {
+  if (frames > 0) g_recorder.process(mono, static_cast<uint32_t>(frames));
+}
+
+void ps_input_set_gain(float linear_gain) { g_recorder.setGain(linear_gain); }
+
+float ps_input_take_peak_level(void) { return g_recorder.takePeakLevel(); }
+
+int32_t ps_input_clipped(void) { return g_recorder.clipped() ? 1 : 0; }
+
+void ps_input_reset_clip(void) { g_recorder.resetClip(); }
+
+int32_t ps_recorder_begin(const char* wav_path, int32_t sample_rate) {
+  if (!wav_path || sample_rate <= 0) return PS_ERROR_FILE;
+  return g_recorder.begin(wav_path, static_cast<uint32_t>(sample_rate));
+}
+
+int32_t ps_recorder_end(const char* peaks_path) {
+  return g_recorder.end(peaks_path);
+}
+
+void ps_recorder_set_paused(int32_t paused) {
+  g_recorder.setPaused(paused != 0);
+}
+
+int32_t ps_recorder_is_paused(void) { return g_recorder.paused() ? 1 : 0; }
+
+int32_t ps_recorder_is_recording(void) {
+  return g_recorder.recording() ? 1 : 0;
+}
+
+int64_t ps_recorder_frames_written(void) { return g_recorder.framesWritten(); }
+
+int64_t ps_recorder_dropped_frames(void) { return g_recorder.droppedFrames(); }
+
+int32_t ps_recorder_write_error(void) {
+  return g_recorder.writeError() ? 1 : 0;
+}
+
+int32_t ps_recorder_copy_peaks(float* out, int32_t first_block,
+                               int32_t max_blocks) {
+  if (!out) return 0;
+  return g_recorder.copyPeaks(out, first_block, max_blocks);
+}
+
+int32_t ps_recorder_peak_block_count(void) {
+  return g_recorder.peakBlockCount();
+}
+
+// ---- Player ----
+
+int32_t ps_player_open(const char* wav_path) {
+  return wav_path ? g_player.open(wav_path) : PS_ERROR_FILE;
+}
+void ps_player_close(void) { g_player.close(); }
+void ps_player_set_playing(int32_t playing) { g_player.setPlaying(playing != 0); }
+int32_t ps_player_is_playing(void) { return g_player.playing() ? 1 : 0; }
+int32_t ps_player_finished(void) { return g_player.finished() ? 1 : 0; }
+int32_t ps_player_seek(int64_t frame) { return g_player.seek(frame); }
+int64_t ps_player_position(void) { return g_player.position(); }
+int64_t ps_player_length(void) { return g_player.length(); }
+
+void ps_player_render_offline(float* out, int32_t frames, int32_t channels) {
+  if (!out || frames <= 0 || channels <= 0) return;
+  std::fill(out, out + static_cast<size_t>(frames) * channels, 0.0f);
+  g_player.renderForTest(out, static_cast<uint32_t>(frames),
+                         static_cast<uint32_t>(channels));
+}
+
+int32_t ps_peaks_build(const char* wav_path, const char* peaks_path) {
+  if (!wav_path || !peaks_path) return PS_ERROR_FILE;
+  return ps::buildPeaksFromWav(wav_path, peaks_path, ps::Recorder::kPeakBlock)
+             ? PS_OK
+             : PS_ERROR_FILE;
 }
 
 }  // extern "C"

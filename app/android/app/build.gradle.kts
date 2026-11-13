@@ -47,3 +47,9 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // ContextCompat / NotificationCompat / ServiceCompat for the mic permission
+    // and the recording foreground service (MainActivity, RecordingService).
+    implementation("androidx.core:core-ktx:1.13.1")
+}

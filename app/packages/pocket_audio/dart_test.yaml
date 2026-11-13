@@ -1,3 +1,6 @@
+# The native engine is process-global; test files must not run in parallel.
+concurrency: 1
+
 tags:
   device:
     skip: "Needs a real audio device. Run with: dart test --run-skipped -t device"

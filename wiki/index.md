@@ -39,6 +39,7 @@
 - [[d004-licence]] — accepted: Apache-2.0
 - [[d005-loop-engine]] — accepted: loop pedal runs fully in the C++ real-time engine
 - [[d006-native-build]] — accepted: `package_ffi` build hook, vendored miniaudio, Apple ObjC++ + no runtime linking
+- [[d007-recording-format]] — accepted: mono, 48 kHz, 32-bit float WAV; pre-roll after M1
 
 ## Questions
 - [[q-transpose-scope]] — global vs per-clip transpose?

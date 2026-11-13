@@ -33,11 +33,17 @@ Each milestone ends with: build workflow → lint pass → log entry.
 | M9+ | Backlog | Driven by raw/feedback/ |
 
 ## Current state
-All bootstrap decisions made. **Milestone 0 in progress** (2026-10-26):
+**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **Next: M2** ([[playback-and-scrub]], [[audio-latency]]).
+
+**Android: built by CI, not verified on a device.** No Android phone is available (2026-11-13). Android stays a target ([[d001-platform-and-stack]] unchanged): CI keeps the APK compiling, and the open Android checks below are done whenever a phone turns up.
+- [ ] Hello tone on a real Android phone (M0)
+- [ ] M1 on a real Android phone: mic permission, UNPROCESSED input, foreground-service background recording
+
+Milestone 0 (2026-10-26 → 2026-11-13):
 - [x] Folders, `CLAUDE.md`, seed wiki
 - [x] `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `CONTRIBUTING.md` ([[d004-licence]])
 - [x] Flutter app + C++ core via FFI ([[d006-native-build]], [[audio-engine]]); hello tone verified on macOS host
 - [x] CI builds both platforms — first run green 2026-11-13 (github.com/KhoiLe12/Vibe-Coding-, run 43402746413)
 - [x] Hello tone on a real iPhone — 2026-11-13, iPhone 16 Pro Max (iOS 26.6.2), release build
-- [ ] Hello tone on a real Android phone — **deferred** 2026-11-13 (no Android phone on hand); do this before M1 is called done
+- [ ] Hello tone on a real Android phone — deferred; see Android list above
 - [x] Lint passes (`tools/wiki_lint.py`: 0 errors)

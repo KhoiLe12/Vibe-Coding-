@@ -13,6 +13,33 @@ external ffi.Pointer<ffi.Char> ps_version();
 @ffi.Native<ffi.Int32 Function()>()
 external int ps_engine_start();
 
+/// Like ps_engine_start, but with_input != 0 opens the device full duplex:
+/// mono 32-bit float microphone input feeding the input stage/recorder, plus
+/// stereo output. iOS: play-and-record session in measurement mode (no voice
+/// processing), speaker by default. Android: UNPROCESSED input preset, falling
+/// back to VOICE_RECOGNITION. Returns PS_ERROR_NO_PERMISSION if the
+/// microphone permission is not granted (iOS).
+@ffi.Native<ffi.Int32 Function(ffi.Int32)>()
+external int ps_engine_start_ex(int with_input);
+
+/// 1 if running with microphone input.
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_engine_has_input();
+
+/// Number of OS audio interruptions (calls, Siri, other apps) since launch.
+/// The engine restarts by itself when an interruption ends.
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_engine_interruption_count();
+
+/// Microphone permission (PS_MIC_*). Managed here on iOS; elsewhere reports
+/// PS_MIC_GRANTED (Android asks in the app shell).
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_mic_permission();
+
+/// Shows the OS permission prompt if not yet answered. Poll ps_mic_permission.
+@ffi.Native<ffi.Void Function()>()
+external void ps_mic_request_permission();
+
 /// Stops the callback and closes the device. Safe to call when not running.
 @ffi.Native<ffi.Void Function()>()
 external void ps_engine_stop();
@@ -31,7 +58,8 @@ external int ps_engine_sample_rate();
 external int ps_engine_callback_count();
 
 /// Sets the test tone. amplitude is linear (0 = silent, 1 = full scale).
-/// Changes are ramped over ~10 ms on the audio thread, so they never click.
+/// Amplitude changes are ramped on the audio thread (at most full scale per
+/// 10 ms), so they never click.
 /// Lock-free; safe to call from any thread at any time.
 @ffi.Native<ffi.Void Function(ffi.Double, ffi.Float)>()
 external void ps_tone_set(double frequency_hz, double amplitude);
@@ -57,8 +85,137 @@ external void ps_tone_render_offline(
   double amplitude,
 );
 
+/// Frames per min/max pair in live and stored peaks (256).
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_peaks_block_frames();
+
+/// Feeds mono input through the input stage and, while recording, into the
+/// take. This is exactly what the device's audio callback calls; tests call it
+/// directly to record without a microphone. Real-time safe.
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Float>, ffi.Int32)>()
+external void ps_input_process(ffi.Pointer<ffi.Float> mono, int frames);
+
+/// Input gain, linear (1 = unity). Smoothed on the audio thread (~5 ms).
+@ffi.Native<ffi.Void Function(ffi.Float)>()
+external void ps_input_set_gain(double linear_gain);
+
+/// Highest absolute post-gain sample since the previous call (0..). Resets.
+@ffi.Native<ffi.Float Function()>()
+external double ps_input_take_peak_level();
+
+/// 1 if any post-gain sample reached full scale since the last reset.
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_input_clipped();
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_input_reset_clip();
+
+/// Starts a take: creates the WAV at wav_path and starts the writer thread.
+/// Does not open any audio device. Returns PS_OK, PS_ERROR_ALREADY_RUNNING
+/// or PS_ERROR_FILE.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Char>, ffi.Int32)>()
+external int ps_recorder_begin(ffi.Pointer<ffi.Char> wav_path, int sample_rate);
+
+/// Finishes the take: drains buffered audio, finalizes the WAV and, unless
+/// peaks_path is NULL/empty, writes the peaks file. Blocks briefly.
+/// Returns PS_OK, PS_ERROR_NOT_RECORDING or PS_ERROR_FILE.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Char>)>()
+external int ps_recorder_end(ffi.Pointer<ffi.Char> peaks_path);
+
+/// While paused, input is metered but not written; resume appends to the
+/// same take.
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_recorder_set_paused(int paused);
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_recorder_is_paused();
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_recorder_is_recording();
+
+/// Frames saved to the file so far, and frames lost because the writer fell
+/// behind (should stay 0).
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_recorder_frames_written();
+
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_recorder_dropped_frames();
+
+/// 1 after a disk error or the 4 GiB WAV limit; the take keeps what was
+/// already saved.
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_recorder_write_error();
+
+/// Live waveform: copies up to max_blocks (min, max) pairs starting at
+/// first_block into out (2 floats per block). Returns blocks copied.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Float>, ffi.Int32, ffi.Int32)>()
+external int ps_recorder_copy_peaks(
+  ffi.Pointer<ffi.Float> out,
+  int first_block,
+  int max_blocks,
+);
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_recorder_peak_block_count();
+
+/// Opens a take (mono 32-bit float WAV), paused at frame 0. Closes any
+/// previous take. Returns PS_OK or PS_ERROR_FILE.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Char>)>()
+external int ps_player_open(ffi.Pointer<ffi.Char> wav_path);
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_player_close();
+
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_player_set_playing(int playing);
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_player_is_playing();
+
+/// 1 once playback reached the end (playing turns 0). Cleared by seek/open.
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_player_finished();
+
+@ffi.Native<ffi.Int32 Function(ffi.Int64)>()
+external int ps_player_seek(int frame);
+
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_player_position();
+
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_player_length();
+
+/// Runs the player's audio-thread code into out (zeroed first) without a
+/// device. For tests; do not call while the engine is running.
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Float>, ffi.Int32, ffi.Int32)>()
+external void ps_player_render_offline(
+  ffi.Pointer<ffi.Float> out,
+  int frames,
+  int channels,
+);
+
+/// Rebuilds a take's peaks file from its WAV (e.g. after a crash). Slow for
+/// long takes: call off the UI thread. Returns PS_OK or PS_ERROR_FILE.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>)>()
+external int ps_peaks_build(
+  ffi.Pointer<ffi.Char> wav_path,
+  ffi.Pointer<ffi.Char> peaks_path,
+);
+
 const int PS_OK = 0;
 
 const int PS_ERROR_DEVICE = -1;
 
 const int PS_ERROR_ALREADY_RUNNING = -2;
+
+const int PS_ERROR_FILE = -3;
+
+const int PS_ERROR_NOT_RECORDING = -4;
+
+const int PS_ERROR_NO_PERMISSION = -5;
+
+const int PS_MIC_UNDETERMINED = 0;
+
+const int PS_MIC_GRANTED = 1;
+
+const int PS_MIC_DENIED = 2;

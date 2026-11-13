@@ -58,3 +58,27 @@
 - pages touched: [[overview]]
 - notes: Human has no Android phone on hand. M0's exit criteria (lint, CI on both platforms) are met, so work moves to M1.
   The real-Android hello-tone check stays open and must be done before M1 is marked done.
+
+## [2026-11-13] decision | M1 recording format: mono, 32-bit float WAV, pre-roll later
+- pages touched: [[d007-recording-format]], [[record]], [[index]]
+- notes: Human picked all three recommended options while planning M1.
+
+## [2026-11-13] build | M1 step 1: recorder core (host-tested)
+- pages touched: [[audio-engine]], [[storage]]
+- notes: Ring buffer, streaming float WAV writer with crash-safe header, writer thread, live/stored peaks, input gain/meter/clip.
+  14/14 host tests incl. 30 min @100x, bit-exact. Found and fixed: smoothed gain stalled at 1.00001 and never returned to exact unity.
+
+## [2026-11-13] build | M1 steps 2–3: mic, iOS session, player, screens
+- pages touched: [[audio-engine]], [[storage]], [[waveform-view]]
+- notes: Duplex engine, iOS measurement-mode session + permission + background audio + interruption restart, Android shell (unverified),
+  streaming player, takes list / Record / Take screens. 21 core + 3 app tests pass; 2 s real-mic take on the Mac. Installed on iPhone.
+
+## [2026-11-13] build | iPhone M1 tests; basic seeking pulled forward
+- pages touched: [[record]], [[playback-and-scrub]]
+- notes: Human: quick test and background test pass, stop→editor < 300 ms every time; 15-min take recorded. Couldn't skip around a
+  long take, so tap/drag-to-seek + ±5 s buttons were added early. 30-min run still open.
+
+## [2026-11-13] build | M1 done on iOS; Android verification open
+- pages touched: [[record]], [[overview]]
+- notes: Human: 30-min iPhone take passed. All M1 criteria verified on iOS. No Android phone is available, so the Android checks
+  (M0 hello tone, M1) stay open in [[overview]]. This replaces the earlier rule that they block M1; d001 is unchanged, CI still builds Android.

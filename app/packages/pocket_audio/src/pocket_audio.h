@@ -25,6 +25,14 @@ extern "C" {
 #define PS_OK 0
 #define PS_ERROR_DEVICE -1
 #define PS_ERROR_ALREADY_RUNNING -2
+#define PS_ERROR_FILE -3
+#define PS_ERROR_NOT_RECORDING -4
+#define PS_ERROR_NO_PERMISSION -5
+
+// Microphone permission states.
+#define PS_MIC_UNDETERMINED 0
+#define PS_MIC_GRANTED 1
+#define PS_MIC_DENIED 2
 
 // Version string of the audio core, e.g. "0.1.0 (miniaudio 0.11.25)".
 PS_EXPORT const char* ps_version(void);
@@ -32,6 +40,28 @@ PS_EXPORT const char* ps_version(void);
 // Opens the default output device (48 kHz, stereo, 32-bit float) and starts
 // the real-time callback. Returns PS_OK or a negative error code.
 PS_EXPORT int32_t ps_engine_start(void);
+
+// Like ps_engine_start, but with_input != 0 opens the device full duplex:
+// mono 32-bit float microphone input feeding the input stage/recorder, plus
+// stereo output. iOS: play-and-record session in measurement mode (no voice
+// processing), speaker by default. Android: UNPROCESSED input preset, falling
+// back to VOICE_RECOGNITION. Returns PS_ERROR_NO_PERMISSION if the
+// microphone permission is not granted (iOS).
+PS_EXPORT int32_t ps_engine_start_ex(int32_t with_input);
+
+// 1 if running with microphone input.
+PS_EXPORT int32_t ps_engine_has_input(void);
+
+// Number of OS audio interruptions (calls, Siri, other apps) since launch.
+// The engine restarts by itself when an interruption ends.
+PS_EXPORT int32_t ps_engine_interruption_count(void);
+
+// Microphone permission (PS_MIC_*). Managed here on iOS; elsewhere reports
+// PS_MIC_GRANTED (Android asks in the app shell).
+PS_EXPORT int32_t ps_mic_permission(void);
+
+// Shows the OS permission prompt if not yet answered. Poll ps_mic_permission.
+PS_EXPORT void ps_mic_request_permission(void);
 
 // Stops the callback and closes the device. Safe to call when not running.
 PS_EXPORT void ps_engine_stop(void);
@@ -57,6 +87,86 @@ PS_EXPORT void ps_tone_set(double frequency_hz, float amplitude);
 PS_EXPORT void ps_tone_render_offline(float* out, int32_t frames,
                                       int32_t channels, int32_t sample_rate,
                                       double frequency_hz, float amplitude);
+
+// ---- Recorder (M1) -------------------------------------------------------
+// Takes are mono 32-bit float WAV (wiki/decisions/d007-recording-format.md).
+// The input stage (gain, level meter, clip flag) runs on every input buffer,
+// whether or not a take is recording.
+
+// Frames per min/max pair in live and stored peaks (256).
+PS_EXPORT int32_t ps_peaks_block_frames(void);
+
+// Feeds mono input through the input stage and, while recording, into the
+// take. This is exactly what the device's audio callback calls; tests call it
+// directly to record without a microphone. Real-time safe.
+PS_EXPORT void ps_input_process(const float* mono, int32_t frames);
+
+// Input gain, linear (1 = unity). Smoothed on the audio thread (~5 ms).
+PS_EXPORT void ps_input_set_gain(float linear_gain);
+
+// Highest absolute post-gain sample since the previous call (0..). Resets.
+PS_EXPORT float ps_input_take_peak_level(void);
+
+// 1 if any post-gain sample reached full scale since the last reset.
+PS_EXPORT int32_t ps_input_clipped(void);
+PS_EXPORT void ps_input_reset_clip(void);
+
+// Starts a take: creates the WAV at wav_path and starts the writer thread.
+// Does not open any audio device. Returns PS_OK, PS_ERROR_ALREADY_RUNNING
+// or PS_ERROR_FILE.
+PS_EXPORT int32_t ps_recorder_begin(const char* wav_path, int32_t sample_rate);
+
+// Finishes the take: drains buffered audio, finalizes the WAV and, unless
+// peaks_path is NULL/empty, writes the peaks file. Blocks briefly.
+// Returns PS_OK, PS_ERROR_NOT_RECORDING or PS_ERROR_FILE.
+PS_EXPORT int32_t ps_recorder_end(const char* peaks_path);
+
+// While paused, input is metered but not written; resume appends to the
+// same take.
+PS_EXPORT void ps_recorder_set_paused(int32_t paused);
+PS_EXPORT int32_t ps_recorder_is_paused(void);
+PS_EXPORT int32_t ps_recorder_is_recording(void);
+
+// Frames saved to the file so far, and frames lost because the writer fell
+// behind (should stay 0).
+PS_EXPORT int64_t ps_recorder_frames_written(void);
+PS_EXPORT int64_t ps_recorder_dropped_frames(void);
+
+// 1 after a disk error or the 4 GiB WAV limit; the take keeps what was
+// already saved.
+PS_EXPORT int32_t ps_recorder_write_error(void);
+
+// Live waveform: copies up to max_blocks (min, max) pairs starting at
+// first_block into out (2 floats per block). Returns blocks copied.
+PS_EXPORT int32_t ps_recorder_copy_peaks(float* out, int32_t first_block,
+                                         int32_t max_blocks);
+PS_EXPORT int32_t ps_recorder_peak_block_count(void);
+
+// ---- Player (M1) ---------------------------------------------------------
+// Streams one take from disk, mixed into the engine output. Play/pause ramp
+// over ~5 ms (no clicks). Takes cut short by a crash play in full: the length
+// comes from the file size when the header lags.
+
+// Opens a take (mono 32-bit float WAV), paused at frame 0. Closes any
+// previous take. Returns PS_OK or PS_ERROR_FILE.
+PS_EXPORT int32_t ps_player_open(const char* wav_path);
+PS_EXPORT void ps_player_close(void);
+PS_EXPORT void ps_player_set_playing(int32_t playing);
+PS_EXPORT int32_t ps_player_is_playing(void);
+// 1 once playback reached the end (playing turns 0). Cleared by seek/open.
+PS_EXPORT int32_t ps_player_finished(void);
+PS_EXPORT int32_t ps_player_seek(int64_t frame);
+PS_EXPORT int64_t ps_player_position(void);
+PS_EXPORT int64_t ps_player_length(void);
+
+// Runs the player's audio-thread code into out (zeroed first) without a
+// device. For tests; do not call while the engine is running.
+PS_EXPORT void ps_player_render_offline(float* out, int32_t frames,
+                                        int32_t channels);
+
+// Rebuilds a take's peaks file from its WAV (e.g. after a crash). Slow for
+// long takes: call off the UI thread. Returns PS_OK or PS_ERROR_FILE.
+PS_EXPORT int32_t ps_peaks_build(const char* wav_path, const char* peaks_path);
 
 #ifdef __cplusplus
 }
