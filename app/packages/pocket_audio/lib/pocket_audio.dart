@@ -51,6 +51,33 @@ abstract final class PocketAudio {
     }
   }
 
+  /// Requested I/O buffer size in frames for the next [start]; 0 = default.
+  static set periodFrames(int frames) =>
+      bindings.ps_engine_set_period_frames(frames);
+
+  /// Buffer sizes the OS actually granted, or null when stopped.
+  static ({
+    int playbackPeriod,
+    int playbackPeriods,
+    int capturePeriod,
+    int capturePeriods,
+    int sampleRate,
+  })? get bufferInfo {
+    final p = calloc<ffi.Int32>(5);
+    try {
+      if (bindings.ps_engine_buffer_info(p) == 0) return null;
+      return (
+        playbackPeriod: p[0],
+        playbackPeriods: p[1],
+        capturePeriod: p[2],
+        capturePeriods: p[3],
+        sampleRate: p[4],
+      );
+    } finally {
+      calloc.free(p);
+    }
+  }
+
   /// Whether the engine is running with the microphone open.
   static bool get hasInput => bindings.ps_engine_has_input() != 0;
 
@@ -83,8 +110,10 @@ abstract final class PocketAudio {
 
   /// Sets the test tone. [amplitude] is linear, 0 (silent) to 1 (full scale).
   /// Changes are ramped on the audio thread, so they never click.
-  static void setTone({required double frequencyHz, required double amplitude}) =>
-      bindings.ps_tone_set(frequencyHz, amplitude);
+  static void setTone({
+    required double frequencyHz,
+    required double amplitude,
+  }) => bindings.ps_tone_set(frequencyHz, amplitude);
 
   /// Renders the tone without a device, as interleaved float samples.
   static Float32List renderToneOffline({
@@ -98,7 +127,13 @@ abstract final class PocketAudio {
     final buffer = calloc<ffi.Float>(length);
     try {
       bindings.ps_tone_render_offline(
-          buffer, frames, channels, sampleRate, frequencyHz, amplitude);
+        buffer,
+        frames,
+        channels,
+        sampleRate,
+        frequencyHz,
+        amplitude,
+      );
       return Float32List.fromList(buffer.asTypedList(length));
     } finally {
       calloc.free(buffer);
@@ -136,8 +171,10 @@ abstract final class PocketAudio {
   static void beginRecording(String wavPath, {int sampleRate = 48000}) {
     final path = wavPath.toNativeUtf8();
     try {
-      _check(bindings.ps_recorder_begin(path.cast(), sampleRate),
-          'could not start recording to $wavPath');
+      _check(
+        bindings.ps_recorder_begin(path.cast(), sampleRate),
+        'could not start recording to $wavPath',
+      );
     } finally {
       calloc.free(path);
     }
@@ -147,7 +184,10 @@ abstract final class PocketAudio {
   static void endRecording({String? peaksPath}) {
     final path = (peaksPath ?? '').toNativeUtf8();
     try {
-      _check(bindings.ps_recorder_end(path.cast()), 'could not finish the take');
+      _check(
+        bindings.ps_recorder_end(path.cast()),
+        'could not finish the take',
+      );
     } finally {
       calloc.free(path);
     }
@@ -228,11 +268,58 @@ abstract final class PocketAudio {
     final w = wavPath.toNativeUtf8();
     final p = peaksPath.toNativeUtf8();
     try {
-      _check(bindings.ps_peaks_build(w.cast(), p.cast()),
-          'could not build peaks for $wavPath');
+      _check(
+        bindings.ps_peaks_build(w.cast(), p.cast()),
+        'could not build peaks for $wavPath',
+      );
     } finally {
       calloc.free(w);
       calloc.free(p);
     }
   }
+
+  // ---- Latency probe (M2 gate) ----
+
+  /// Starts chirping every [intervalMs] and measuring the round trip. Needs
+  /// the engine running with input.
+  static void startLatencyProbe({int intervalMs = 500}) =>
+      bindings.ps_latency_start(intervalMs);
+  static void stopLatencyProbe() => bindings.ps_latency_stop();
+  static bool get latencyProbeRunning => bindings.ps_latency_is_running() != 0;
+  static int get latencyCount => bindings.ps_latency_count();
+  static int get latencyMissed => bindings.ps_latency_missed();
+  static bool get latencyInputOverflow =>
+      bindings.ps_latency_input_overflow() != 0;
+
+  /// Round trips in milliseconds, in measurement order.
+  static Float32List latencyResults(int first, int max) {
+    if (max <= 0) return Float32List(0);
+    final buffer = calloc<ffi.Float>(max);
+    try {
+      final n = bindings.ps_latency_copy_ms(buffer, first, max);
+      return Float32List.fromList(buffer.asTypedList(n));
+    } finally {
+      calloc.free(buffer);
+    }
+  }
+
+  /// OS-reported latency of the current route in seconds, or null where the
+  /// OS does not report it.
+  static ({double input, double output, double ioBuffer})? get reportedLatency {
+    final p = calloc<ffi.Double>(3);
+    try {
+      if (bindings.ps_latency_reported(p, p + 1, p + 2) == 0) return null;
+      return (input: p[0], output: p[1], ioBuffer: p[2]);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Tests: runs the probe against a simulated room. Engine must be stopped.
+  static void simulateLatency({
+    required int delayFrames,
+    required int seconds,
+    double echoGain = 0.3,
+    double noise = 0.01,
+  }) => bindings.ps_latency_simulate(delayFrames, seconds, echoGain, noise);
 }

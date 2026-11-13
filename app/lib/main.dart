@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'screens/latency_screen.dart';
 import 'screens/record_screen.dart';
 import 'screens/take_screen.dart';
 import 'takes/take_store.dart';
@@ -93,6 +94,12 @@ class _TakesScreenState extends State<TakesScreen> {
       appBar: AppBar(
         title: const Text('Pocket Studio'),
         actions: [
+          IconButton(
+            key: const Key('latency'),
+            tooltip: 'Latency test',
+            icon: const Icon(Icons.speed),
+            onPressed: () => _push(const LatencyScreen()),
+          ),
           IconButton(
             tooltip: 'Licences',
             icon: const Icon(Icons.info_outline),

@@ -22,6 +22,17 @@ external int ps_engine_start();
 @ffi.Native<ffi.Int32 Function(ffi.Int32)>()
 external int ps_engine_start_ex(int with_input);
 
+/// Requested I/O buffer (period) size in frames for the next start; 0 = the
+/// default (10 ms). Smaller = lower latency, more CPU wake-ups.
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_engine_set_period_frames(int frames);
+
+/// Buffer sizes actually granted, into out_values[5]: playback period frames,
+/// playback periods, capture period frames, capture periods, device sample
+/// rate. Returns 1 while running, else 0.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Int32>)>()
+external int ps_engine_buffer_info(ffi.Pointer<ffi.Int32> out_values);
+
 /// 1 if running with microphone input.
 @ffi.Native<ffi.Int32 Function()>()
 external int ps_engine_has_input();
@@ -200,6 +211,58 @@ external void ps_player_render_offline(
 external int ps_peaks_build(
   ffi.Pointer<ffi.Char> wav_path,
   ffi.Pointer<ffi.Char> peaks_path,
+);
+
+/// Starts chirping every interval_ms (at least ~405 ms) and clears results.
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_latency_start(int interval_ms);
+
+/// Stops chirping; results stay readable.
+@ffi.Native<ffi.Void Function()>()
+external void ps_latency_stop();
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_latency_is_running();
+
+/// Detected chirps, and chirps not found (too quiet or noisy).
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_latency_count();
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_latency_missed();
+
+/// 1 if the analysis fell behind and input was lost (results unreliable).
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_latency_input_overflow();
+
+/// Copies round trips in ms (emission order). Returns how many were copied.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Float>, ffi.Int32, ffi.Int32)>()
+external int ps_latency_copy_ms(ffi.Pointer<ffi.Float> out, int first, int max);
+
+/// OS-reported latency of the current route, in seconds. Returns 1 if the OS
+/// reports it (iOS), else 0.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+  )
+>()
+external int ps_latency_reported(
+  ffi.Pointer<ffi.Double> input_s,
+  ffi.Pointer<ffi.Double> output_s,
+  ffi.Pointer<ffi.Double> io_buffer_s,
+);
+
+/// Tests: runs the probe against a simulated room (echo after delay_frames,
+/// scaled by echo_gain, plus white noise). Engine must not be running.
+/// Blocks; results are then readable through the functions above.
+@ffi.Native<ffi.Void Function(ffi.Int32, ffi.Int32, ffi.Float, ffi.Float)>()
+external void ps_latency_simulate(
+  int delay_frames,
+  int seconds,
+  double echo_gain,
+  double noise_amp,
 );
 
 const int PS_OK = 0;

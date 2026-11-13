@@ -14,6 +14,7 @@ bool activateSession(bool) { return true; }
 void deactivateSession() {}
 int32_t micPermission() { return PS_MIC_GRANTED; }
 void requestMicPermission() {}
+bool reportedLatency(double*, double*, double*) { return false; }
 
 }  // namespace platform
 }  // namespace ps

@@ -1,7 +1,7 @@
 ---
 type: decision
 status: accepted
-updated: 2026-10-26
+updated: 2026-11-14
 sources: [raw/plan/pocket-studio-plan.md, raw/ideas/2026-10-26-platform-and-transpose.md, raw/ideas/2026-10-26-scope.md]
 tags: [platform, stack]
 ---
@@ -32,3 +32,5 @@ One codebase for both stores; C++ build setup for Android NDK and iOS is a one-t
 ## Follow-ups
 - Set up a CI build for both platforms in M0. *(Done: workflow in [[d006-native-build]]; first run green on 2026-11-13 — Android debug APK and unsigned iOS build both succeed.)*
 - *Update 2026-10-26* (raw/ideas/2026-10-26-scope.md): the [[loop-pedal]] needs full-duplex audio with low, stable latency. At the end of M2, a **go/no-go gate** measures round-trip latency on one real iPhone and one mid-range Android. Target: ≤ 30 ms on wired headphones, with no drift over 10 minutes ([[audio-latency]]). If miniaudio misses the target, switch that platform to Oboe or AVAudioEngine behind the same C++ interface before starting M5.
+- *Update 2026-11-14:* the gate is now measured on the built-in speaker + mic instead of wired headphones (human has no wired headphones for a USB-C iPhone); target and drift rule unchanged — [[d008-latency-gate-route]].
+- *Update 2026-11-14:* **iOS half of the gate passed** — 22.1 ms median, drift 0 over 10 min, with 64-frame periods; iOS stays on miniaudio ([[d010-duplex-buffer-size]]). Android half still open.

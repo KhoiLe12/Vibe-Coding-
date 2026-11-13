@@ -16,8 +16,12 @@ void main() {
 
     test('fills every channel with the same sample', () {
       final out = PocketAudio.renderToneOffline(
-          frames: 480, channels: 2, sampleRate: sampleRate,
-          frequencyHz: 440, amplitude: 0.5);
+        frames: 480,
+        channels: 2,
+        sampleRate: sampleRate,
+        frequencyHz: 440,
+        amplitude: 0.5,
+      );
       for (var i = 0; i < 480; i++) {
         expect(out[2 * i], out[2 * i + 1]);
       }
@@ -25,8 +29,12 @@ void main() {
 
     test('ramps in from silence instead of clicking', () {
       final out = PocketAudio.renderToneOffline(
-          frames: sampleRate, channels: 1, sampleRate: sampleRate,
-          frequencyHz: 440, amplitude: 0.5);
+        frames: sampleRate,
+        channels: 1,
+        sampleRate: sampleRate,
+        frequencyHz: 440,
+        amplitude: 0.5,
+      );
       expect(out[0], 0);
       // Slew limit is full scale per 10 ms, so after 1 ms |sample| <= 0.1.
       for (var i = 0; i < 48; i++) {
@@ -40,8 +48,12 @@ void main() {
 
     test('has the requested frequency', () {
       final out = PocketAudio.renderToneOffline(
-          frames: sampleRate, channels: 1, sampleRate: sampleRate,
-          frequencyHz: 440, amplitude: 1);
+        frames: sampleRate,
+        channels: 1,
+        sampleRate: sampleRate,
+        frequencyHz: 440,
+        amplitude: 1,
+      );
       var upwardCrossings = 0;
       for (var i = 1; i < out.length; i++) {
         if (out[i - 1] < 0 && out[i] >= 0) upwardCrossings++;
@@ -51,8 +63,12 @@ void main() {
 
     test('silent at zero amplitude', () {
       final out = PocketAudio.renderToneOffline(
-          frames: 4800, channels: 2, sampleRate: sampleRate,
-          frequencyHz: 440, amplitude: 0);
+        frames: 4800,
+        channels: 2,
+        sampleRate: sampleRate,
+        frequencyHz: 440,
+        amplitude: 0,
+      );
       expect(out.every((s) => s == 0), isTrue);
     });
   });

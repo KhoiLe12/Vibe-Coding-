@@ -16,9 +16,16 @@ abstract final class AudioControl {
 
   /// Runs the engine with the microphone open (Record screen). The mic is
   /// only open while it is needed, so the OS recording indicator is honest.
-  static void useInput() {
+  ///
+  /// Mic open ⇒ 64-frame I/O buffers: the only size that meets the M2 latency
+  /// gate with miniaudio on iOS (22 ms round trip; wiki/decisions/
+  /// d010-duplex-buffer-size.md). [periodFrames] overrides it (Latency screen).
+  static const duplexPeriodFrames = 64;
+
+  static void useInput({int periodFrames = duplexPeriodFrames}) {
     if (PocketAudio.isRunning && PocketAudio.hasInput) return;
     PocketAudio.stop();
+    PocketAudio.periodFrames = periodFrames;
     PocketAudio.start(input: true);
   }
 
@@ -26,6 +33,7 @@ abstract final class AudioControl {
   static void useOutput() {
     if (PocketAudio.isRunning && !PocketAudio.hasInput) return;
     PocketAudio.stop();
+    PocketAudio.periodFrames = 0; // default 10 ms: playback only, saves battery
     PocketAudio.start();
   }
 

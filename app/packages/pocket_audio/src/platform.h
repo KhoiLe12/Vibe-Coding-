@@ -29,6 +29,10 @@ int32_t micPermission();
 // micPermission() for the result.
 void requestMicPermission();
 
+// Latency the OS reports for the current route, in seconds. Returns false
+// where the OS does not report it (everything but iOS for now).
+bool reportedLatency(double* input, double* output, double* ioBuffer);
+
 }  // namespace platform
 }  // namespace ps
 

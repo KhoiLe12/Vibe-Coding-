@@ -6,8 +6,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
 #include <mutex>
 
+#include "latency_probe.h"
 #include "platform.h"
 #include "player.h"
 #include "pocket_audio.h"
@@ -33,6 +37,9 @@ struct Engine {
 Engine g_engine;
 ps::Recorder g_recorder;
 ps::Player g_player;
+ps::LatencyProbe g_probe;
+// Requested period (I/O buffer) size in frames; 0 = miniaudio's default.
+std::atomic<int32_t> g_periodFrames{0};
 // Guards start/stop/restart. Never taken on the audio thread.
 std::mutex g_controlMutex;
 
@@ -45,6 +52,9 @@ void dataCallback(ma_device* device, void* output, const void* input,
   engine->tone.render(static_cast<float*>(output), frameCount,
                       device->playback.channels, device->sampleRate);
   g_player.render(static_cast<float*>(output), frameCount,
+                  device->playback.channels);
+  g_probe.process(static_cast<const float*>(input),
+                  static_cast<float*>(output), frameCount,
                   device->playback.channels);
   engine->callbacks.fetch_add(1, std::memory_order_relaxed);
 }
@@ -73,6 +83,10 @@ ma_result initDevice(bool withInput, int presetAttempt) {
   config.capture.channels = 1;  // mono takes (d007)
   config.sampleRate = kSampleRate;
   config.performanceProfile = ma_performance_profile_low_latency;
+  // On iOS miniaudio turns this into the session's preferred I/O buffer
+  // duration, and the duplex bridge pads by 2 capture periods, so it drives
+  // round-trip latency directly (wiki/concepts/audio-latency.md).
+  config.periodSizeInFrames = static_cast<ma_uint32>(g_periodFrames.load());
   config.dataCallback = dataCallback;
   config.notificationCallback = notificationCallback;
   config.pUserData = &g_engine;
@@ -160,6 +174,25 @@ int32_t ps_engine_sample_rate(void) {
   std::lock_guard<std::mutex> lock(g_controlMutex);
   return g_engine.running ? static_cast<int32_t>(g_engine.device.sampleRate)
                           : 0;
+}
+
+void ps_engine_set_period_frames(int32_t frames) {
+  g_periodFrames.store(frames < 0 ? 0 : frames);
+}
+
+int32_t ps_engine_buffer_info(int32_t* out_values) {
+  std::lock_guard<std::mutex> lock(g_controlMutex);
+  if (!out_values || !g_engine.running) return 0;
+  const ma_device& d = g_engine.device;
+  out_values[0] = static_cast<int32_t>(d.playback.internalPeriodSizeInFrames);
+  out_values[1] = static_cast<int32_t>(d.playback.internalPeriods);
+  out_values[2] = g_engine.withInput
+                      ? static_cast<int32_t>(d.capture.internalPeriodSizeInFrames)
+                      : 0;
+  out_values[3] =
+      g_engine.withInput ? static_cast<int32_t>(d.capture.internalPeriods) : 0;
+  out_values[4] = static_cast<int32_t>(d.playback.internalSampleRate);
+  return 1;
 }
 
 int64_t ps_engine_callback_count(void) {
@@ -268,6 +301,62 @@ int32_t ps_peaks_build(const char* wav_path, const char* peaks_path) {
   return ps::buildPeaksFromWav(wav_path, peaks_path, ps::Recorder::kPeakBlock)
              ? PS_OK
              : PS_ERROR_FILE;
+}
+
+// ---- Latency probe (M2 gate) ----
+
+void ps_latency_start(int32_t interval_ms) {
+  const uint32_t sr = kSampleRate;
+  g_probe.start(sr, static_cast<uint32_t>(std::max(0, interval_ms)) * sr / 1000);
+}
+void ps_latency_stop(void) { g_probe.stop(); }
+int32_t ps_latency_is_running(void) { return g_probe.active() ? 1 : 0; }
+int32_t ps_latency_count(void) { return g_probe.count(); }
+int32_t ps_latency_missed(void) { return g_probe.missed(); }
+int32_t ps_latency_input_overflow(void) {
+  return g_probe.inputOverflow() ? 1 : 0;
+}
+int32_t ps_latency_copy_ms(float* out, int32_t first, int32_t max) {
+  return out ? g_probe.copyResults(out, first, max) : 0;
+}
+
+int32_t ps_latency_reported(double* input_s, double* output_s,
+                            double* io_buffer_s) {
+  if (!input_s || !output_s || !io_buffer_s) return 0;
+  return ps::platform::reportedLatency(input_s, output_s, io_buffer_s) ? 1 : 0;
+}
+
+void ps_latency_simulate(int32_t delay_frames, int32_t seconds,
+                         float echo_gain, float noise_amp) {
+  // A fake room: whatever the probe plays comes back delay_frames later,
+  // scaled by echo_gain, plus white noise. Drives the probe's audio-thread
+  // code exactly as a 256-frame duplex callback would.
+  constexpr uint32_t kBlock = 256;
+  const uint32_t sr = kSampleRate;
+  g_probe.start(sr, sr / 2);
+  const size_t total = static_cast<size_t>(seconds) * sr;
+  std::vector<float> outHistory(total + kBlock, 0.0f);
+  std::vector<float> in(kBlock), out(kBlock);
+  uint32_t noise = 12345;
+  for (size_t pos = 0; pos + kBlock <= total; pos += kBlock) {
+    for (uint32_t i = 0; i < kBlock; ++i) {
+      const int64_t src = static_cast<int64_t>(pos + i) - delay_frames;
+      noise = noise * 1664525u + 1013904223u;
+      const float n = noise_amp * ((noise >> 8) / 8388608.0f - 1.0f);
+      in[i] = (src >= 0 ? echo_gain * outHistory[static_cast<size_t>(src)] : 0) + n;
+    }
+    std::fill(out.begin(), out.end(), 0.0f);
+    g_probe.process(in.data(), out.data(), kBlock, 1);
+    std::copy(out.begin(), out.end(), outHistory.begin() + pos);
+    // Faster than real time, but never faster than the analysis thread
+    // drains its input (a real device delivers input in real time).
+    while (g_probe.inputBacklog() > sr) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  // Give the analysis thread time to finish, then stop (results are kept).
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  g_probe.stop();
 }
 
 }  // extern "C"

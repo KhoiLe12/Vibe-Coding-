@@ -23,7 +23,7 @@ Each milestone ends with: build workflow → lint pass → log entry.
 |---|---|---|
 | M0 | Bootstrap: wiki, legal files, Flutter + C++ core via FFI, "hello tone" | Lint passes; CI builds both platforms |
 | M1 | Record & play ([[record]], [[storage]], [[waveform-view]]) | Record 30 min, play back, survives backgrounding |
-| M2 | Navigate + latency gate ([[playback-and-scrub]], [[audio-latency]]) | Seek < 50 ms; **go/no-go** ≤ 30 ms round trip on wired headphones |
+| M2 | Navigate + latency gate ([[playback-and-scrub]], [[audio-latency]]) | Seek < 50 ms; **go/no-go** ≤ 30 ms round trip on the built-in speaker + mic ([[d008-latency-gate-route]]) |
 | M3 | Chop ([[chop]], [[edit-model]], [[undo-history]]) | Every edit undoable, no clicks at cuts |
 | M4 | Transpose & tempo ([[transpose]], [[tempo]]) | No tempo drift; 1-min clip ≤ 2 s; UI never blocks |
 | M5 | Loop pedal ([[loop-pedal]]) | All loop-pedal acceptance criteria on both platforms |
@@ -33,7 +33,7 @@ Each milestone ends with: build workflow → lint pass → log entry.
 | M9+ | Backlog | Driven by raw/feedback/ |
 
 ## Current state
-**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **Next: M2** ([[playback-and-scrub]], [[audio-latency]]).
+**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **M2 in progress:** iOS latency gate **passed** 2026-11-14 (22.1 ms, drift 0; [[d010-duplex-buffer-size]]). Remaining: tape-style scrub ([[d009-scrub-style]]), hold-to-rewind, zoom, loop region ([[playback-and-scrub]]).
 
 **Android: built by CI, not verified on a device.** No Android phone is available (2026-11-13). Android stays a target ([[d001-platform-and-stack]] unchanged): CI keeps the APK compiling, and the open Android checks below are done whenever a phone turns up.
 - [ ] Hello tone on a real Android phone (M0)

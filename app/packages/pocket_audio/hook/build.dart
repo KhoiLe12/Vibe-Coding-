@@ -23,6 +23,7 @@ void main(List<String> args) async {
       assetName: '${packageName}_bindings_generated.dart',
       sources: [
         'src/engine.cpp',
+        'src/latency_probe.cpp',
         'src/player.cpp',
         'src/recorder.cpp',
         'src/wav_writer.cpp',

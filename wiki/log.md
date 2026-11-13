@@ -80,5 +80,37 @@
 
 ## [2026-11-13] build | M1 done on iOS; Android verification open
 - pages touched: [[record]], [[overview]]
-- notes: Human: 30-min iPhone take passed. All M1 criteria verified on iOS. No Android phone is available, so the Android checks
+- notes: Human: 30-min iPhone take passed. All M1 criteria verified on iOS. CI run 43466417419 green (lint, tests, Android APK incl. new Kotlin, iOS). No Android phone is available, so the Android checks
   (M0 hello tone, M1) stay open in [[overview]]. This replaces the earlier rule that they block M1; d001 is unchanged, CI still builds Android.
+
+## [2026-11-14] decision | M2 latency gate measured on built-in speaker + mic
+- pages touched: [[d008-latency-gate-route]], [[d001-platform-and-stack]], [[audio-latency]], [[overview]], [[index]]
+- notes: Human has no wired headphones (USB-C iPhone, no adapter) and chose the speaker+mic measurement as the final gate route.
+  Target (≤ 30 ms, no drift over 10 min) unchanged; Android half still open.
+
+## [2026-11-14] decision | Tape-style scrubbing
+- pages touched: [[d009-scrub-style]], [[playback-and-scrub]], [[index]]
+- notes: Human picked tape-style over snippet-style. M2 starts with the latency gate, since it can change the engine.
+
+## [2026-11-14] build | M2: latency probe + Latency test screen
+- pages touched: [[audio-latency]], [[audio-engine]]
+- notes: Chirp + cross-correlation probe in the audio callback; 29 core tests pass (simulated room exact to the sample, misses
+  instead of wrong values in noise). Drift threshold set at 1 ms. Installed on iPhone for the gate run.
+
+## [2026-11-14] build | Latency gate: 87.5 ms on iPhone; buffer-size experiment
+- pages touched: [[audio-latency]]
+- notes: Human measured a constant 87.5 ms. Traced to miniaudio's iOS duplex buffering (10 ms period override + 2-period ring padding).
+  Added a period-size picker and granted-buffer readout to the Latency screen to measure the effect.
+
+## [2026-11-14] build | Latency: 22.1 ms at 64-frame periods
+- pages touched: [[audio-latency]]
+- notes: Default 87.4 ms vs 64 frames 22.1 ms ⇒ ≈ 7 periods + 12.8 ms fixed. Under target only at 64. Next: 10-min drift run at 64, crackle check.
+
+## [2026-11-14] decision | iOS latency gate passed; 64-frame duplex buffers
+- pages touched: [[d010-duplex-buffer-size]], [[d001-platform-and-stack]], [[audio-latency]], [[overview]], [[index]]
+- notes: Human's 10-min run at 64 frames: median 22.1 ms, drift 0, no crackling, one 148 ms outlier. iOS keeps miniaudio.
+  Mic-open paths now use 64-frame periods; playback stays at the default. Needs a recording re-check at 64 frames.
+
+## [2026-11-14] build | Recording re-checked at 64-frame buffers
+- pages touched: [[d010-duplex-buffer-size]]
+- notes: Human recorded several minutes (incl. locked phone) at 64 frames: no lost audio, clean playback.

@@ -23,7 +23,8 @@ String recordTake(int frames, {String name = 'take'}) {
   for (var i = 0; i < frames; i += 480) {
     final n = (frames - i).clamp(0, 480);
     PocketAudio.processInput(
-        Float32List.fromList([for (var k = 0; k < n; k++) signal(i + k)]));
+      Float32List.fromList([for (var k = 0; k < n; k++) signal(i + k)]),
+    );
   }
   PocketAudio.endRecording(peaksPath: '${dir.path}/$name.peaks');
   return path;
@@ -107,36 +108,47 @@ void main() {
     expect(PocketAudio.playbackPosition, 11000);
   });
 
-  test('a take cut short by a crash plays in full and gets peaks rebuilt',
-      () async {
-    final path = '${dir.path}/crash.wav';
-    PocketAudio.beginRecording(path);
-    PocketAudio.processInput(
-        Float32List.fromList([for (var i = 0; i < sr + 5000; i++) signal(i)]));
-    while (PocketAudio.framesWritten < sr + 5000) {
-      await Future<void>.delayed(const Duration(milliseconds: 5));
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-    // Simulate the crash: copy the file as it is now, header possibly stale.
-    final crashed = '${dir.path}/crashed.wav';
-    File(path).copySync(crashed);
-    PocketAudio.endRecording();
+  test(
+    'a take cut short by a crash plays in full and gets peaks rebuilt',
+    () async {
+      final path = '${dir.path}/crash.wav';
+      PocketAudio.beginRecording(path);
+      PocketAudio.processInput(
+        Float32List.fromList([for (var i = 0; i < sr + 5000; i++) signal(i)]),
+      );
+      while (PocketAudio.framesWritten < sr + 5000) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      // Simulate the crash: copy the file as it is now, header possibly stale.
+      final crashed = '${dir.path}/crashed.wav';
+      File(path).copySync(crashed);
+      PocketAudio.endRecording();
 
-    PocketAudio.openTake(crashed);
-    expect(PocketAudio.takeLength, sr + 5000,
-        reason: 'length from file size, not the stale header');
+      PocketAudio.openTake(crashed);
+      expect(
+        PocketAudio.takeLength,
+        sr + 5000,
+        reason: 'length from file size, not the stale header',
+      );
 
-    PocketAudio.buildPeaks(crashed, '${dir.path}/crashed.peaks');
-    final rebuilt = File('${dir.path}/crashed.peaks').readAsBytesSync();
-    PocketAudio.closeTake();
-    recordTake(sr + 5000, name: 'clean');
-    expect(rebuilt, File('${dir.path}/clean.peaks').readAsBytesSync(),
-        reason: 'rebuilt peaks match the recorder\'s own');
-  });
+      PocketAudio.buildPeaks(crashed, '${dir.path}/crashed.peaks');
+      final rebuilt = File('${dir.path}/crashed.peaks').readAsBytesSync();
+      PocketAudio.closeTake();
+      recordTake(sr + 5000, name: 'clean');
+      expect(
+        rebuilt,
+        File('${dir.path}/clean.peaks').readAsBytesSync(),
+        reason: 'rebuilt peaks match the recorder\'s own',
+      );
+    },
+  );
 
   test('rejects files that are not mono float WAVs', () {
     File('${dir.path}/bad.wav').writeAsStringSync('not a wav');
-    expect(() => PocketAudio.openTake('${dir.path}/bad.wav'),
-        throwsA(isA<PocketAudioException>()));
+    expect(
+      () => PocketAudio.openTake('${dir.path}/bad.wav'),
+      throwsA(isA<PocketAudioException>()),
+    );
   });
 }

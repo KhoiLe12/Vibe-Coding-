@@ -84,7 +84,17 @@ void requestMicPermission() {
   }
 }
 
+bool reportedLatency(double* input, double* output, double* ioBuffer) {
+  AVAudioSession* session = [AVAudioSession sharedInstance];
+  *input = session.inputLatency;
+  *output = session.outputLatency;
+  *ioBuffer = session.IOBufferDuration;
+  return true;
+}
+
 #else  // macOS: no audio session; TCC prompts on first capture.
+
+bool reportedLatency(double*, double*, double*) { return false; }
 
 bool activateSession(bool) { return true; }
 void deactivateSession() {}

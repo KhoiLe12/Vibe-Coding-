@@ -11,7 +11,7 @@ Milestone M2. *Pulled forward into M1 (2026-11-13, human needed it to check long
 
 ## Behaviour
 - Play/pause.
-- Drag the playhead to scrub with audible preview.
+- Drag the playhead to scrub with audible preview — **tape-style**: speed and pitch follow the finger ([[d009-scrub-style]]).
 - Rewind/forward buttons (jump ±5 s, configurable); tap-and-hold to rewind continuously.
 - Loop a selected region.
 - Playback reflects the current edits, not the raw file ([[non-destructive-editing]]).

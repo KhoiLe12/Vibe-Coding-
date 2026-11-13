@@ -114,8 +114,10 @@ void main() {
 
     // Peaks file: header + one (min, max) pair per 256 frames, last partial.
     final peaks = ByteData.sublistView(File(peaksPath).readAsBytesSync());
-    expect(String.fromCharCodes(
-        peaks.buffer.asUint8List(peaks.offsetInBytes, 4)), 'PSPK');
+    expect(
+      String.fromCharCodes(peaks.buffer.asUint8List(peaks.offsetInBytes, 4)),
+      'PSPK',
+    );
     expect(peaks.getUint32(4, Endian.little), 1);
     expect(peaks.getUint32(8, Endian.little), 256);
     final blocks = peaks.getUint32(12, Endian.little);
@@ -149,25 +151,29 @@ void main() {
     }
   });
 
-  test('file on disk is a valid WAV while still recording (crash safety)',
-      () async {
-    final wavPath = '${dir.path}/take.wav';
-    PocketAudio.beginRecording(wavPath);
-    for (var i = 0; i < sr * 2; i += 480) {
-      PocketAudio.processInput(chunk(i, 480));
-    }
-    await waitForWritten(sr * 2);
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+  test(
+    'file on disk is a valid WAV while still recording (crash safety)',
+    () async {
+      final wavPath = '${dir.path}/take.wav';
+      PocketAudio.beginRecording(wavPath);
+      for (var i = 0; i < sr * 2; i += 480) {
+        PocketAudio.processInput(chunk(i, 480));
+      }
+      await waitForWritten(sr * 2);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
-    // Read as a crash would leave it: no endRecording().
-    final wav = Wav(File(wavPath).readAsBytesSync());
-    expect(wav.frames, greaterThanOrEqualTo(sr),
-        reason: 'header is patched at least once per second of audio');
-    expect(wav.frames, lessThanOrEqualTo(sr * 2));
-    expect(wav.sample(wav.frames - 1),
-        f32(signal(wav.frames - 1)));
-    PocketAudio.endRecording();
-  });
+      // Read as a crash would leave it: no endRecording().
+      final wav = Wav(File(wavPath).readAsBytesSync());
+      expect(
+        wav.frames,
+        greaterThanOrEqualTo(sr),
+        reason: 'header is patched at least once per second of audio',
+      );
+      expect(wav.frames, lessThanOrEqualTo(sr * 2));
+      expect(wav.sample(wav.frames - 1), f32(signal(wav.frames - 1)));
+      PocketAudio.endRecording();
+    },
+  );
 
   test('live peaks follow the recording', () async {
     PocketAudio.beginRecording('${dir.path}/take.wav');
@@ -187,7 +193,9 @@ void main() {
     expect(PocketAudio.clipped, isFalse);
 
     PocketAudio.inputGain = 3.0;
-    PocketAudio.processInput(Float32List(sr ~/ 10)..fillRange(0, sr ~/ 10, 0.4));
+    PocketAudio.processInput(
+      Float32List(sr ~/ 10)..fillRange(0, sr ~/ 10, 0.4),
+    );
     expect(PocketAudio.takeInputPeak(), closeTo(1.2, 1e-3));
     expect(PocketAudio.clipped, isTrue);
     PocketAudio.resetClip();
@@ -218,17 +226,22 @@ void main() {
 
   test('begin twice and end without a take are errors', () {
     PocketAudio.beginRecording('${dir.path}/a.wav');
-    expect(() => PocketAudio.beginRecording('${dir.path}/b.wav'),
-        throwsA(isA<PocketAudioException>()));
+    expect(
+      () => PocketAudio.beginRecording('${dir.path}/b.wav'),
+      throwsA(isA<PocketAudioException>()),
+    );
     PocketAudio.endRecording();
-    expect(() => PocketAudio.endRecording(),
-        throwsA(isA<PocketAudioException>()));
-    expect(() => PocketAudio.beginRecording('${dir.path}/no/such/dir.wav'),
-        throwsA(isA<PocketAudioException>()));
+    expect(
+      () => PocketAudio.endRecording(),
+      throwsA(isA<PocketAudioException>()),
+    );
+    expect(
+      () => PocketAudio.beginRecording('${dir.path}/no/such/dir.wav'),
+      throwsA(isA<PocketAudioException>()),
+    );
   });
 
-  test('30 minutes at 100x real time: no dropouts, every sample intact',
-      () async {
+  test('30 minutes at 100x real time: no dropouts, every sample intact', () async {
     final wavPath = '${dir.path}/long.wav';
     const total = 30 * 60 * sr;
     const block = 480; // 10 ms, a typical callback size
@@ -240,7 +253,9 @@ void main() {
         buf[i] = signal(sec * sr + i);
       }
       for (var off = 0; off < sr; off += block) {
-        PocketAudio.processInput(Float32List.sublistView(buf, off, off + block));
+        PocketAudio.processInput(
+          Float32List.sublistView(buf, off, off + block),
+        );
       }
       // Pace at 100x real time: one second of audio every 10 ms.
       final due = start.add(Duration(milliseconds: (sec + 1) * 10));
@@ -261,10 +276,13 @@ void main() {
       for (var sec = 0; sec < 30 * 60; sec++) {
         final bytes = file.readSync(sr * 4);
         final got = Float32List.sublistView(
-            Uint8List.fromList(bytes)); // copy for alignment
+          Uint8List.fromList(bytes),
+        ); // copy for alignment
         for (var i = 0; i < sr; i++) {
           if (got[i] != f32(signal(sec * sr + i))) {
-            fail('sample ${sec * sr + i} differs: got ${got[i]} want ${f32(signal(sec * sr + i))}');
+            fail(
+              'sample ${sec * sr + i} differs: got ${got[i]} want ${f32(signal(sec * sr + i))}',
+            );
           }
         }
       }

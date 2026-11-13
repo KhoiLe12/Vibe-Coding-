@@ -45,6 +45,9 @@ C API in `app/packages/pocket_audio/src/pocket_audio.h`, wrapped by the Dart cla
 | `ps_player_open/close/set_playing/is_playing/finished/seek/position/length` | `openTake()`, `closeTake()`, `playing`, `isPlaying`, `playbackFinished`, `seek()`, `playbackPosition`, `takeLength` | one take at a time |
 | `ps_player_render_offline` | `renderPlayerOffline()` | tests: player's audio-thread code without a device |
 | `ps_peaks_build(wav, peaks)` | `buildPeaks()` | rebuild peaks after a crash; run off the UI thread |
+| `ps_latency_start/stop/is_running/count/missed/input_overflow/copy_ms` | `startLatencyProbe()`, `stopLatencyProbe()`, `latencyCount`, `latencyMissed`, `latencyResults()` … | M2 gate probe ([[audio-latency]]) |
+| `ps_latency_reported` | `reportedLatency` | iOS input/output latency + I/O buffer (s); null elsewhere |
+| `ps_latency_simulate(delay, s, gain, noise)` | `simulateLatency()` | tests: probe against a simulated room |
 
 Threading: control calls take a mutex that the audio callback never touches; the callback reads only atomics and does no allocation, locking or I/O.
 
@@ -56,6 +59,8 @@ Threading: control calls take a mutex that the audio callback never touches; the
 - `app/packages/pocket_audio/src/wav_writer.h` / `wav_writer.cpp` — streaming float WAV writer, crash-safe header
 - `app/packages/pocket_audio/src/recorder.h` / `recorder.cpp` — input stage, recorder, writer thread, peaks
 - `app/packages/pocket_audio/src/player.h` / `player.cpp` — streaming take player, WAV probe, peaks rebuild
+- `app/packages/pocket_audio/src/latency_probe.h` / `latency_probe.cpp` — chirp round-trip probe (M2 gate)
+- `app/lib/screens/latency_screen.dart` — Latency test screen (quick 15 s / full 10 min)
 - `app/packages/pocket_audio/src/platform.h`, `platform_apple.mm`, `platform_other.cpp` — iOS audio session + mic permission; no-ops elsewhere
 - `app/lib/audio/audio_control.dart` — engine mode, mic permission (iOS via FFI, Android via channel), Android service
 - `app/lib/screens/record_screen.dart`, `take_screen.dart`, `app/lib/main.dart` (takes list) — M1 UI

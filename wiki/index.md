@@ -40,6 +40,9 @@
 - [[d005-loop-engine]] — accepted: loop pedal runs fully in the C++ real-time engine
 - [[d006-native-build]] — accepted: `package_ffi` build hook, vendored miniaudio, Apple ObjC++ + no runtime linking
 - [[d007-recording-format]] — accepted: mono, 48 kHz, 32-bit float WAV; pre-roll after M1
+- [[d010-duplex-buffer-size]] — accepted: 64-frame buffers while the mic is open; iOS keeps miniaudio (gate passed, 22 ms)
+- [[d009-scrub-style]] — accepted: tape-style scrubbing (speed/pitch follow the finger)
+- [[d008-latency-gate-route]] — accepted: M2 latency gate measured on built-in speaker + mic, not wired headphones
 
 ## Questions
 - [[q-transpose-scope]] — global vs per-clip transpose?

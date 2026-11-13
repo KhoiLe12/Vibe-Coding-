@@ -45,6 +45,8 @@ void main() {
     expect(frames, inInclusiveRange(48000 * 3 ~/ 2, 48000 * 5 ~/ 2));
     expect(PocketAudio.droppedFrames, 0);
     // ignore: avoid_print
-    print('mic take: $frames frames, input peak ${PocketAudio.takeInputPeak()}');
+    print(
+      'mic take: $frames frames, input peak ${PocketAudio.takeInputPeak()}',
+    );
   });
 }

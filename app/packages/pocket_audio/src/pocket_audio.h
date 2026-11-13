@@ -49,6 +49,15 @@ PS_EXPORT int32_t ps_engine_start(void);
 // microphone permission is not granted (iOS).
 PS_EXPORT int32_t ps_engine_start_ex(int32_t with_input);
 
+// Requested I/O buffer (period) size in frames for the next start; 0 = the
+// default (10 ms). Smaller = lower latency, more CPU wake-ups.
+PS_EXPORT void ps_engine_set_period_frames(int32_t frames);
+
+// Buffer sizes actually granted, into out_values[5]: playback period frames,
+// playback periods, capture period frames, capture periods, device sample
+// rate. Returns 1 while running, else 0.
+PS_EXPORT int32_t ps_engine_buffer_info(int32_t* out_values);
+
 // 1 if running with microphone input.
 PS_EXPORT int32_t ps_engine_has_input(void);
 
@@ -167,6 +176,36 @@ PS_EXPORT void ps_player_render_offline(float* out, int32_t frames,
 // Rebuilds a take's peaks file from its WAV (e.g. after a crash). Slow for
 // long takes: call off the UI thread. Returns PS_OK or PS_ERROR_FILE.
 PS_EXPORT int32_t ps_peaks_build(const char* wav_path, const char* peaks_path);
+
+// ---- Latency probe (M2 go/no-go gate) ------------------------------------
+// wiki/decisions/d008-latency-gate-route.md. While running, a 5 ms chirp is
+// added to the output every interval and found again in the mic input; each
+// detection is one round-trip measurement. Needs the engine running with
+// input (ps_engine_start_ex(1)).
+
+// Starts chirping every interval_ms (at least ~405 ms) and clears results.
+PS_EXPORT void ps_latency_start(int32_t interval_ms);
+// Stops chirping; results stay readable.
+PS_EXPORT void ps_latency_stop(void);
+PS_EXPORT int32_t ps_latency_is_running(void);
+// Detected chirps, and chirps not found (too quiet or noisy).
+PS_EXPORT int32_t ps_latency_count(void);
+PS_EXPORT int32_t ps_latency_missed(void);
+// 1 if the analysis fell behind and input was lost (results unreliable).
+PS_EXPORT int32_t ps_latency_input_overflow(void);
+// Copies round trips in ms (emission order). Returns how many were copied.
+PS_EXPORT int32_t ps_latency_copy_ms(float* out, int32_t first, int32_t max);
+
+// OS-reported latency of the current route, in seconds. Returns 1 if the OS
+// reports it (iOS), else 0.
+PS_EXPORT int32_t ps_latency_reported(double* input_s, double* output_s,
+                                      double* io_buffer_s);
+
+// Tests: runs the probe against a simulated room (echo after delay_frames,
+// scaled by echo_gain, plus white noise). Engine must not be running.
+// Blocks; results are then readable through the functions above.
+PS_EXPORT void ps_latency_simulate(int32_t delay_frames, int32_t seconds,
+                                   float echo_gain, float noise_amp);
 
 #ifdef __cplusplus
 }
