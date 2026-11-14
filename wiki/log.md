@@ -167,3 +167,44 @@
 - pages touched: [[transpose]], [[tempo]], [[overview]]
 - notes: Human: renders 0.6–1 s, switch-over in place, formant toggle works to ±5 st, attacks crisp, UI responsive, editing while
   transposed fine. Mid-range render-speed criterion left open (only a high-end iPhone available).
+
+## [2026-11-14] decision | Loop pedal M5a: speaker monitoring, scope split, engine design
+- pages touched: [[d014-looper-m5a]], [[loop-pedal]], [[index]]
+- notes: Human: speaker monitoring for now; split M5a/M5b. Bounce = mixdown into a new take until M7 (flagged deviation).
+  CI run 43548790516 green for 6c30672 (M4), incl. Signalsmith on Linux/Android.
+
+## [2026-11-14] build | M5a loop pedal built
+- pages touched: [[audio-engine]], [[loop-pedal]], [[storage]]
+- notes: Looper engine in the audio callback + screen + per-route calibration. Caught in review: stale layer buffers of an old loop
+  length could be written past their end → buffers now length-tagged. 66 core + 24 app tests; one unexplained full-suite failure
+  seen once, not reproduced in 30 reruns. Installed on iPhone.
+
+## [2026-11-14] build | Loop pedal too quiet on iPhone → gains + meters
+- pages touched: [[d014-looper-m5a]], [[loop-pedal]]
+- notes: Human couldn't hear the loop. Real-device Mac test showed the engine works (-28.5 dBFS room noise recorded); a playback
+  meter confirmed a level problem (no mic AGC + quieter speaker in measurement mode). Added mic gain / loop volume (+12 dB) and a limiter.
+
+## [2026-11-14] build | Loop pedal: default iOS mode instead of +12 dB boosts
+- pages touched: [[d014-looper-m5a]], [[recording-diverse-material]]
+- notes: Human: still quiet below ~70 % volume and the mic clipped. Root cause is measurement mode disabling speaker loudness
+  processing; the loop pedal now uses the default mode (no AEC/NS), gains back to 0 dB, calibration keyed per route+mode.
+
+## [2026-11-14] decision | Layers (multitrack) inserted as M6; overdub = one layer per press
+- pages touched: [[layers]], [[d015-layers]], [[loop-pedal]], [[overview]], [[index]], plus renumbered M6–M9 references
+- notes: Human: "loop pedal" meant layering recordings. Chose both modes (record on top + add takes), sliding layers, recorded layers as
+  takes, Layers next; loop pedal kept. Overdub fixed to one layer per press; looper gain smoothing made one-pole (was 1 s to come down).
+
+## [2026-11-14] build | Loop pedal: overdub layers locked to the loop
+- pages touched: [[loop-pedal]], [[d014-looper-m5a]]
+- notes: Human: layers should start and record together. Overdub now arms, records exactly one pass from the loop start with a
+  seam crossfade, adds itself; press again cancels. 70 core tests pass. Installed on iPhone.
+
+## [2026-11-14] build | Loop pedal: Overdub restarts the loop; session-state leaks fixed
+- pages touched: [[loop-pedal]], [[d014-looper-m5a]]
+- notes: Human found the wait-for-loop-start countdown clunky. Overdub now restarts the loop at once and records one pass.
+  Tests exposed two leaks across sessions (restart fade could read past a shorter loop; smoothed gains). 71 core tests pass 3×.
+
+## [2026-11-14] build | M5a done on iOS; delete any loop layer
+- pages touched: [[loop-pedal]], [[overview]]
+- notes: Human verified restart, timing, bounce, 10 layers, undo. Added per-layer delete (fade then remove, first take mute-only).
+  72 core + 24 app tests. Mid-range 20-layer check stays open.

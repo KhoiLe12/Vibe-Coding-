@@ -52,6 +52,12 @@ abstract final class PocketAudio {
     }
   }
 
+  /// iOS, for the next [start] with input: true (default) = measurement
+  /// mode — unprocessed mic but a quiet speaker; false = default mode —
+  /// normal speaker loudness (wiki/decisions/d014-looper-m5a.md).
+  static set rawInput(bool raw) =>
+      bindings.ps_engine_set_raw_input(raw ? 1 : 0);
+
   /// Requested I/O buffer size in frames for the next [start]; 0 = default.
   static set periodFrames(int frames) =>
       bindings.ps_engine_set_period_frames(frames);
@@ -417,7 +423,102 @@ abstract final class PocketAudio {
   static RenderState get renderState =>
       RenderState.values[bindings.ps_render_state()];
   static double get renderProgress => bindings.ps_render_progress();
+
+  /// Current output route name, e.g. "Speaker" (calibration is per route).
+  static String get outputRoute =>
+      bindings.ps_output_route().cast<Utf8>().toDartString();
 }
 
 /// State of the latest render (matches PS_RENDER_*).
 enum RenderState { idle, running, done, failed, cancelled }
+
+/// Loop pedal state (matches PS_LOOPER_*).
+enum LooperState {
+  idle,
+  recording,
+  closing,
+  playing,
+  overdubbing,
+  stopped,
+
+  /// Overdub waiting for the loop start.
+  armed,
+}
+
+/// The loop pedal in the audio engine (wiki/decisions/d014-looper-m5a.md).
+/// Needs the engine running with input; commands apply on the next callback.
+abstract final class Looper {
+  static void enable() => bindings.ps_looper_enable(1);
+  static void disable() => bindings.ps_looper_enable(0);
+  static bool get enabled => bindings.ps_looper_enabled() != 0;
+
+  /// Main button: record → close loop → arm an overdub (records exactly one
+  /// pass from the loop start) → pressing while armed/recording cancels.
+  static void press() => bindings.ps_looper_press();
+  static void stop() => bindings.ps_looper_stop();
+  static void play() => bindings.ps_looper_play();
+  static void clear() => bindings.ps_looper_clear();
+  static void undo() => bindings.ps_looper_undo();
+  static void redo() => bindings.ps_looper_redo();
+
+  /// Removes overdub layer [layer] (≥ 1) after a 5 ms fade; layers above
+  /// it move down one index. Not undoable.
+  static void deleteLayer(int layer) => bindings.ps_looper_delete_layer(layer);
+
+  /// Calibrated round trip in frames; overdubs are shifted back by it.
+  static set latencyFrames(int frames) =>
+      bindings.ps_looper_set_latency(frames);
+
+  /// Effective gain of layer [layer] (0 = first take) after mute/solo/volume.
+  static void setLayerGain(int layer, double gain) =>
+      bindings.ps_looper_set_layer_gain(layer, gain);
+
+  static LooperState get state =>
+      LooperState.values[bindings.ps_looper_state()];
+  static int get length => bindings.ps_looper_length();
+  static int get position => bindings.ps_looper_position();
+  static int get layers => bindings.ps_looper_layers();
+  static int get redoable => bindings.ps_looper_redoable();
+  static bool get starved => bindings.ps_looper_starved() != 0;
+  static double takeInputPeak() => bindings.ps_looper_take_input_peak();
+  static double takeOutputPeak() => bindings.ps_looper_take_output_peak();
+
+  /// Mic gain for loop recordings (linear).
+  static set inputGain(double g) => bindings.ps_looper_set_input_gain(g);
+
+  /// Loop playback volume (linear; playback only, soft-limited).
+  static set outputGain(double g) => bindings.ps_looper_set_output_gain(g);
+  static bool get clipped => bindings.ps_looper_clipped() != 0;
+  static void resetClip() => bindings.ps_looper_reset_clip();
+
+  /// Mixes the audible layers × [passes] into a mono float WAV at [path].
+  static void bounce(String path, {int passes = 1}) {
+    final p = path.toNativeUtf8();
+    try {
+      if (bindings.ps_looper_bounce(p.cast(), passes) != bindings.PS_OK) {
+        throw PocketAudioException(bindings.PS_ERROR_FILE, 'bounce failed');
+      }
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Tests: runs the looper's audio-thread code on [input] (mono) without a
+  /// device and returns its mono output.
+  static Float32List processOffline(Float32List input) {
+    final n = input.length;
+    final i = calloc<ffi.Float>(n), o = calloc<ffi.Float>(n);
+    try {
+      i.asTypedList(n).setAll(0, input);
+      bindings.ps_looper_process_offline(i, o, n, 1);
+      return Float32List.fromList(o.asTypedList(n));
+    } finally {
+      calloc.free(i);
+      calloc.free(o);
+    }
+  }
+
+  /// Tests: prepares layer buffers now instead of waiting for the service
+  /// thread.
+  static void service() => bindings.ps_looper_service();
+}

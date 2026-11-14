@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'screens/latency_screen.dart';
+import 'screens/looper_screen.dart';
 import 'screens/record_screen.dart';
 import 'screens/take_screen.dart';
 import 'takes/take_store.dart';
@@ -101,6 +102,14 @@ class _TakesScreenState extends State<TakesScreen> {
       appBar: AppBar(
         title: const Text('Pocket Studio'),
         actions: [
+          IconButton(
+            key: const Key('looper'),
+            tooltip: 'Loop pedal',
+            icon: const Icon(Icons.all_inclusive),
+            onPressed: store == null
+                ? null
+                : () => _push(LooperScreen(store: store)),
+          ),
           IconButton(
             key: const Key('latency'),
             tooltip: 'Latency test',

@@ -135,6 +135,10 @@ class TakeStore {
 
   File peaksFile(String id) => File('${peaksDir.path}/$id.bin');
 
+  /// Round-trip latency per audio route (loop pedal, M5a). Stored with the
+  /// project for now; device-wide settings arrive with projects (M8).
+  File get calibrationFile => File('${sources.parent.path}/calibration.json');
+
   File editsFile(String id) => File('${editsDir.path}/$id.json');
 
   /// The take's edit list; the whole recording if unedited or unreadable.

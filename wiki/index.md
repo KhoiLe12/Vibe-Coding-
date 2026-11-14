@@ -12,6 +12,7 @@
 - [[undo-history]] — unlimited undo/redo of edits
 - [[export]] — render edits to a WAV/M4A file and share
 - [[loop-pedal]] — record a loop, overdub layers in sync, mute/undo layers, bounce to the editor
+- [[layers]] — stack takes into a multitrack: record on top, add takes, slide, mix (M6)
 - [[sampling-tools]] — varispeed, reverse, normalize, fades, one-shot/loop sample export
 
 ## Concepts
@@ -40,6 +41,8 @@
 - [[d005-loop-engine]] — accepted: loop pedal runs fully in the C++ real-time engine
 - [[d006-native-build]] — accepted: `package_ffi` build hook, vendored miniaudio, Apple ObjC++ + no runtime linking
 - [[d007-recording-format]] — accepted: mono, 48 kHz, 32-bit float WAV; pre-roll after M1
+- [[d015-layers]] — accepted: Layers (multitrack) is M6; later milestones shift by one; loop pedal kept
+- [[d014-looper-m5a]] — accepted: speaker monitoring for now, M5 split into M5a/M5b, looper engine design
 - [[d013-transpose-tempo-design]] — accepted: whole-take transpose/tempo 75–150%, formant off by default, render the recording, undoable settings
 - [[d012-chop-model]] — accepted: edit in place + revert, clip list timeline, 10 ms equal-power joins, zero-crossing snap, snapshot undo
 - [[d011-mapped-player]] — accepted: player reads takes via mmap + prefetch (scrub, loops, instant seek)

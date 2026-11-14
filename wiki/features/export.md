@@ -7,7 +7,7 @@ tags: [m8, output]
 ---
 # Export
 
-Milestone M8.
+Milestone M9.
 
 ## Behaviour
 - Render the edit list offline (high-quality mode, same as [[transpose]]) to WAV or AAC/M4A.
@@ -16,4 +16,4 @@ Milestone M8.
 - Sample-oriented export formats live in [[sampling-tools]].
 
 ## Acceptance criteria
-_None defined in the plan yet — flagged for lint._ (M8 "done when" says export matches playback.)
+_None defined in the plan yet — flagged for lint._ (M9 "done when" says export matches playback.)

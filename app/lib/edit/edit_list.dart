@@ -234,7 +234,7 @@ class EditList {
 }
 
 /// Unlimited undo/redo over immutable snapshots (d012). Session only; the
-/// history is persisted with projects in M7 (wiki/features/undo-history.md).
+/// history is persisted with projects in M8 (wiki/features/undo-history.md).
 class EditHistory {
   EditHistory(EditList initial) : _states = [(label: '', list: initial)];
 

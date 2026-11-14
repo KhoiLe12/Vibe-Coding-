@@ -10,11 +10,12 @@
 namespace ps {
 namespace platform {
 
-bool activateSession(bool) { return true; }
+bool activateSession(bool, bool) { return true; }
 void deactivateSession() {}
 int32_t micPermission() { return PS_MIC_GRANTED; }
 void requestMicPermission() {}
 bool reportedLatency(double*, double*, double*) { return false; }
+const char* outputRoute() { return "default"; }
 
 }  // namespace platform
 }  // namespace ps

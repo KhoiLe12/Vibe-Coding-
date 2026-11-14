@@ -27,6 +27,12 @@ external int ps_engine_start_ex(int with_input);
 @ffi.Native<ffi.Void Function(ffi.Int32)>()
 external void ps_engine_set_period_frames(int frames);
 
+/// iOS, for the next start with input: raw != 0 (default) = measurement mode
+/// (unprocessed mic, quiet speaker); 0 = default mode (normal speaker
+/// loudness, light mic processing, no echo cancel). Loop pedal uses 0.
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_engine_set_raw_input(int raw);
+
 /// Buffer sizes actually granted, into out_values[5]: playback period frames,
 /// playback periods, capture period frames, capture periods, device sample
 /// rate. Returns 1 while running, else 0.
@@ -327,6 +333,116 @@ external int ps_render_state();
 @ffi.Native<ffi.Double Function()>()
 external double ps_render_progress();
 
+/// Allocates (on) or frees (off) the looper; off also clears it.
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_looper_enable(int on);
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_looper_enabled();
+
+/// Main button: Idle→record, Recording→close loop, Playing→Armed (overdub
+/// starts at the next loop start and records exactly one pass, then adds the
+/// layer by itself); pressing while Armed/Overdubbing cancels it.
+@ffi.Native<ffi.Void Function()>()
+external void ps_looper_press();
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_looper_stop();
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_looper_play();
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_looper_clear();
+
+/// Undo/redo the last overdub layer (instant; the base take stays).
+@ffi.Native<ffi.Void Function()>()
+external void ps_looper_undo();
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_looper_redo();
+
+/// Removes overdub layer i (1 ≤ i < layers; the first take stays) after a
+/// 5 ms fade-out; layers above it move down one index. Not undoable.
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_looper_delete_layer(int layer);
+
+/// Calibrated round trip in frames; overdubs are shifted back by it.
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_looper_set_latency(int frames);
+
+/// Effective gain of layer i (0 = base take) after mute/solo/volume.
+@ffi.Native<ffi.Void Function(ffi.Int32, ffi.Float)>()
+external void ps_looper_set_layer_gain(int layer, double gain);
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_looper_state();
+
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_looper_length();
+
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_looper_position();
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_looper_layers();
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_looper_redoable();
+
+/// 1 if an overdub couldn't start/continue for lack of a prepared buffer.
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_looper_starved();
+
+@ffi.Native<ffi.Float Function()>()
+external double ps_looper_take_input_peak();
+
+@ffi.Native<ffi.Float Function()>()
+external double ps_looper_take_output_peak();
+
+/// Mic gain for loop recordings, and loop playback volume (playback only,
+/// soft-limited). Linear, smoothed over ~50 ms.
+@ffi.Native<ffi.Void Function(ffi.Float)>()
+external void ps_looper_set_input_gain(double gain);
+
+@ffi.Native<ffi.Void Function(ffi.Float)>()
+external void ps_looper_set_output_gain(double gain);
+
+/// 1 if the (gained) mic input reached full scale since the last reset.
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_looper_clipped();
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_looper_reset_clip();
+
+/// Mixes audible layers × passes into a mono float WAV (Playing/Stopped only).
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Char>, ffi.Int32)>()
+external int ps_looper_bounce(ffi.Pointer<ffi.Char> path, int passes);
+
+/// Tests: run the looper's audio-thread code / service step without a device.
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Int32,
+    ffi.Int32,
+  )
+>()
+external void ps_looper_process_offline(
+  ffi.Pointer<ffi.Float> in$,
+  ffi.Pointer<ffi.Float> out,
+  int frames,
+  int channels,
+);
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_looper_service();
+
+/// Current output route name (calibration is per route). Valid until the next
+/// call on the same thread.
+@ffi.Native<ffi.Pointer<ffi.Char> Function()>()
+external ffi.Pointer<ffi.Char> ps_output_route();
+
 /// Starts chirping every interval_ms (at least ~405 ms) and clears results.
 @ffi.Native<ffi.Void Function(ffi.Int32)>()
 external void ps_latency_start(int interval_ms);
@@ -406,3 +522,17 @@ const int PS_RENDER_DONE = 2;
 const int PS_RENDER_FAILED = 3;
 
 const int PS_RENDER_CANCELLED = 4;
+
+const int PS_LOOPER_IDLE = 0;
+
+const int PS_LOOPER_RECORDING = 1;
+
+const int PS_LOOPER_CLOSING = 2;
+
+const int PS_LOOPER_PLAYING = 3;
+
+const int PS_LOOPER_OVERDUBBING = 4;
+
+const int PS_LOOPER_STOPPED = 5;
+
+const int PS_LOOPER_ARMED = 6;

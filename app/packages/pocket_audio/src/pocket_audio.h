@@ -53,6 +53,11 @@ PS_EXPORT int32_t ps_engine_start_ex(int32_t with_input);
 // default (10 ms). Smaller = lower latency, more CPU wake-ups.
 PS_EXPORT void ps_engine_set_period_frames(int32_t frames);
 
+// iOS, for the next start with input: raw != 0 (default) = measurement mode
+// (unprocessed mic, quiet speaker); 0 = default mode (normal speaker
+// loudness, light mic processing, no echo cancel). Loop pedal uses 0.
+PS_EXPORT void ps_engine_set_raw_input(int32_t raw);
+
 // Buffer sizes actually granted, into out_values[5]: playback period frames,
 // playback periods, capture period frames, capture periods, device sample
 // rate. Returns 1 while running, else 0.
@@ -244,6 +249,66 @@ PS_EXPORT void ps_render_cancel(void);
 PS_EXPORT int32_t ps_render_job(void);
 PS_EXPORT int32_t ps_render_state(void);
 PS_EXPORT double ps_render_progress(void);
+
+// ---- Looper (M5a) ---------------------------------------------------------
+// Loop pedal in the audio callback (wiki/decisions/d014-looper-m5a.md).
+// Needs the engine running with input. Commands are queued lock-free and
+// take effect on the next callback.
+
+#define PS_LOOPER_IDLE 0
+#define PS_LOOPER_RECORDING 1
+#define PS_LOOPER_CLOSING 2
+#define PS_LOOPER_PLAYING 3
+#define PS_LOOPER_OVERDUBBING 4
+#define PS_LOOPER_STOPPED 5
+#define PS_LOOPER_ARMED 6
+
+// Allocates (on) or frees (off) the looper; off also clears it.
+PS_EXPORT void ps_looper_enable(int32_t on);
+PS_EXPORT int32_t ps_looper_enabled(void);
+// Main button: Idle→record, Recording→close loop, Playing→Armed (overdub
+// starts at the next loop start and records exactly one pass, then adds the
+// layer by itself); pressing while Armed/Overdubbing cancels it.
+PS_EXPORT void ps_looper_press(void);
+PS_EXPORT void ps_looper_stop(void);
+PS_EXPORT void ps_looper_play(void);
+PS_EXPORT void ps_looper_clear(void);
+// Undo/redo the last overdub layer (instant; the base take stays).
+PS_EXPORT void ps_looper_undo(void);
+PS_EXPORT void ps_looper_redo(void);
+// Removes overdub layer i (1 ≤ i < layers; the first take stays) after a
+// 5 ms fade-out; layers above it move down one index. Not undoable.
+PS_EXPORT void ps_looper_delete_layer(int32_t layer);
+// Calibrated round trip in frames; overdubs are shifted back by it.
+PS_EXPORT void ps_looper_set_latency(int32_t frames);
+// Effective gain of layer i (0 = base take) after mute/solo/volume.
+PS_EXPORT void ps_looper_set_layer_gain(int32_t layer, float gain);
+PS_EXPORT int32_t ps_looper_state(void);
+PS_EXPORT int64_t ps_looper_length(void);    // loop frames (0 = none)
+PS_EXPORT int64_t ps_looper_position(void);  // playhead (or recorded frames)
+PS_EXPORT int32_t ps_looper_layers(void);    // audible layers incl. base
+PS_EXPORT int32_t ps_looper_redoable(void);
+// 1 if an overdub couldn't start/continue for lack of a prepared buffer.
+PS_EXPORT int32_t ps_looper_starved(void);
+PS_EXPORT float ps_looper_take_input_peak(void);
+PS_EXPORT float ps_looper_take_output_peak(void);
+// Mic gain for loop recordings, and loop playback volume (playback only,
+// soft-limited). Linear, smoothed over ~50 ms.
+PS_EXPORT void ps_looper_set_input_gain(float gain);
+PS_EXPORT void ps_looper_set_output_gain(float gain);
+// 1 if the (gained) mic input reached full scale since the last reset.
+PS_EXPORT int32_t ps_looper_clipped(void);
+PS_EXPORT void ps_looper_reset_clip(void);
+// Mixes audible layers × passes into a mono float WAV (Playing/Stopped only).
+PS_EXPORT int32_t ps_looper_bounce(const char* path, int32_t passes);
+// Tests: run the looper's audio-thread code / service step without a device.
+PS_EXPORT void ps_looper_process_offline(const float* in, float* out,
+                                         int32_t frames, int32_t channels);
+PS_EXPORT void ps_looper_service(void);
+
+// Current output route name (calibration is per route). Valid until the next
+// call on the same thread.
+PS_EXPORT const char* ps_output_route(void);
 
 // ---- Latency probe (M2 go/no-go gate) ------------------------------------
 // wiki/decisions/d008-latency-gate-route.md. While running, a 5 ms chirp is

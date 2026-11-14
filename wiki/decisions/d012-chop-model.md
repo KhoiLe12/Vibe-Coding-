@@ -17,7 +17,7 @@ M3 ([[chop]]) needs split / delete / trim / duplicate / reorder with no clicks, 
 - **Clip list:** `Clip { srcStart, srcEnd, gain }` over the take's one recording (fades and multiple sources arrive with [[sampling-tools]] / [[loop-pedal]]; the JSON leaves room for `sourceId`). The [[audio-engine]] plays the list as one **timeline**; position, seek, loop, scrub all work in timeline frames.
 - **Joins:** every join is a **10 ms equal-power crossfade** (outgoing clip runs 5 ms past its end, incoming starts 5 ms early), and every cut snaps to the **nearest zero crossing within ±5 ms** of the source ([[crossfades-and-clicks]]).
 - **Undo = snapshots**, not command objects: each edit produces a new immutable clip list; history is a list of (label, list). Edit lists are tiny, so this is simpler and cannot get out of sync. Unlimited within a session.
-- **Persistence:** the current clip list is saved after every edit (`edits/<take>.json`, [[storage]]). The **history** is not persisted until M7, as planned.
+- **Persistence:** the current clip list is saved after every edit (`edits/<take>.json`, [[storage]]). The **history** is not persisted until M8, as planned.
 
 ## Consequences
 - Duplicated material crossfading into itself gets an up-to-3 dB bump inside the 10 ms join (equal-power assumes uncorrelated audio); inaudible in practice, noted for [[sampling-tools]].

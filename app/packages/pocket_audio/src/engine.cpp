@@ -13,6 +13,7 @@
 
 #include "dsp_processor.h"
 #include "latency_probe.h"
+#include "looper.h"
 #include "platform.h"
 #include "player.h"
 #include "pocket_audio.h"
@@ -33,6 +34,7 @@ struct Engine {
   std::atomic<int32_t> interruptions{0};
   bool running = false;
   bool withInput = false;
+  bool raw = true;
 };
 
 Engine g_engine;
@@ -40,6 +42,9 @@ ps::Recorder g_recorder;
 ps::Player g_player;
 ps::LatencyProbe g_probe;
 ps::DspProcessor g_dsp;
+ps::Looper g_looper;
+// Mic mode for the next start with input (iOS): raw = measurement mode.
+std::atomic<bool> g_rawInput{true};
 // Requested period (I/O buffer) size in frames; 0 = miniaudio's default.
 std::atomic<int32_t> g_periodFrames{0};
 // Guards start/stop/restart. Never taken on the audio thread.
@@ -55,6 +60,9 @@ void dataCallback(ma_device* device, void* output, const void* input,
                       device->playback.channels, device->sampleRate);
   g_player.render(static_cast<float*>(output), frameCount,
                   device->playback.channels);
+  g_looper.process(static_cast<const float*>(input),
+                   static_cast<float*>(output), frameCount,
+                   device->playback.channels);
   g_probe.process(static_cast<const float*>(input),
                   static_cast<float*>(output), frameCount,
                   device->playback.channels);
@@ -72,7 +80,7 @@ void notificationCallback(const ma_device_notification* n) {
   if (n->type != ma_device_notification_type_interruption_ended) return;
   std::lock_guard<std::mutex> lock(g_controlMutex);
   if (!g_engine.running) return;
-  ps::platform::activateSession(g_engine.withInput);
+  ps::platform::activateSession(g_engine.withInput, g_engine.raw);
   ma_device_start(&g_engine.device);
 }
 
@@ -120,7 +128,8 @@ int32_t ps_engine_start_ex(int32_t with_input) {
   if (withInput && ps::platform::micPermission() != PS_MIC_GRANTED) {
     return PS_ERROR_NO_PERMISSION;
   }
-  if (!ps::platform::activateSession(withInput)) return PS_ERROR_DEVICE;
+  const bool raw = g_rawInput.load();
+  if (!ps::platform::activateSession(withInput, raw)) return PS_ERROR_DEVICE;
 
   ma_context_config contextConfig = ma_context_config_init();
   // iOS: the session is configured in platform_apple.mm; miniaudio must not
@@ -146,6 +155,7 @@ int32_t ps_engine_start_ex(int32_t with_input) {
     return PS_ERROR_DEVICE;
   }
   g_engine.withInput = withInput;
+  g_engine.raw = raw;
   g_engine.running = true;
   return PS_OK;
 }
@@ -177,6 +187,8 @@ int32_t ps_engine_sample_rate(void) {
   return g_engine.running ? static_cast<int32_t>(g_engine.device.sampleRate)
                           : 0;
 }
+
+void ps_engine_set_raw_input(int32_t raw) { g_rawInput.store(raw != 0); }
 
 void ps_engine_set_period_frames(int32_t frames) {
   g_periodFrames.store(frames < 0 ? 0 : frames);
@@ -414,5 +426,48 @@ void ps_render_cancel(void) { g_dsp.cancel(); }
 int32_t ps_render_job(void) { return g_dsp.jobId(); }
 int32_t ps_render_state(void) { return g_dsp.state(); }
 double ps_render_progress(void) { return g_dsp.progress(); }
+
+// ---- Looper (M5a) ----
+
+void ps_looper_enable(int32_t on) {
+  if (on) g_looper.enable(); else g_looper.disable();
+}
+int32_t ps_looper_enabled(void) { return g_looper.enabled() ? 1 : 0; }
+void ps_looper_press(void) { g_looper.press(); }
+void ps_looper_stop(void) { g_looper.stop(); }
+void ps_looper_play(void) { g_looper.play(); }
+void ps_looper_clear(void) { g_looper.clear(); }
+void ps_looper_undo(void) { g_looper.undo(); }
+void ps_looper_redo(void) { g_looper.redo(); }
+void ps_looper_delete_layer(int32_t layer) { g_looper.deleteLayer(layer); }
+void ps_looper_set_latency(int32_t frames) { g_looper.setLatency(frames); }
+void ps_looper_set_layer_gain(int32_t layer, float gain) {
+  g_looper.setLayerGain(layer, gain);
+}
+int32_t ps_looper_state(void) { return g_looper.state(); }
+int64_t ps_looper_length(void) { return g_looper.loopLength(); }
+int64_t ps_looper_position(void) { return g_looper.position(); }
+int32_t ps_looper_layers(void) { return g_looper.layers(); }
+int32_t ps_looper_redoable(void) { return g_looper.redoable(); }
+int32_t ps_looper_starved(void) { return g_looper.overdubStarved() ? 1 : 0; }
+float ps_looper_take_input_peak(void) { return g_looper.takeInputPeak(); }
+float ps_looper_take_output_peak(void) { return g_looper.takeOutputPeak(); }
+void ps_looper_set_input_gain(float g) { g_looper.setInputGain(g); }
+void ps_looper_set_output_gain(float g) { g_looper.setOutputGain(g); }
+int32_t ps_looper_clipped(void) { return g_looper.clipped() ? 1 : 0; }
+void ps_looper_reset_clip(void) { g_looper.resetClip(); }
+int32_t ps_looper_bounce(const char* path, int32_t passes) {
+  return path && g_looper.bounce(path, passes) ? PS_OK : PS_ERROR_FILE;
+}
+void ps_looper_process_offline(const float* in, float* out, int32_t frames,
+                               int32_t channels) {
+  if (!out || frames <= 0 || channels <= 0) return;
+  std::fill(out, out + static_cast<size_t>(frames) * channels, 0.0f);
+  g_looper.process(in, out, static_cast<uint32_t>(frames),
+                   static_cast<uint32_t>(channels));
+}
+void ps_looper_service(void) { g_looper.serviceOnce(); }
+
+const char* ps_output_route(void) { return ps::platform::outputRoute(); }
 
 }  // extern "C"

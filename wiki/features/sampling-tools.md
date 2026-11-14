@@ -7,7 +7,7 @@ tags: [m6, sampling]
 ---
 # Sampling tools
 
-For turning random sounds into usable samples (raw/ideas/2026-10-26-scope.md). Milestone M6.
+For turning random sounds into usable samples (raw/ideas/2026-10-26-scope.md). Milestone M7.
 
 ## Behaviour
 - **Reverse** a clip.

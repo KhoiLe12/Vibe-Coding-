@@ -23,12 +23,23 @@ abstract final class AudioControl {
   static const duplexPeriodFrames = 64;
   static const playbackPeriodFrames = 256;
 
-  static void useInput({int periodFrames = duplexPeriodFrames}) {
-    if (PocketAudio.isRunning && PocketAudio.hasInput) return;
+  ///
+  /// [raw] (default) keeps the mic unprocessed (iOS measurement mode), which
+  /// also makes the speaker quiet; the loop pedal passes false for normal
+  /// speaker loudness (wiki/decisions/d014-looper-m5a.md).
+  static void useInput({
+    int periodFrames = duplexPeriodFrames,
+    bool raw = true,
+  }) {
+    if (PocketAudio.isRunning && PocketAudio.hasInput && _raw == raw) return;
     PocketAudio.stop();
     PocketAudio.periodFrames = periodFrames;
+    PocketAudio.rawInput = raw;
     PocketAudio.start(input: true);
+    _raw = raw;
   }
+
+  static bool _raw = true;
 
   /// Runs the engine output-only (playback).
   static void useOutput() {
