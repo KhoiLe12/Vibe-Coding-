@@ -10,6 +10,8 @@
 
 import 'dart:convert';
 
+import '../tempo/grid.dart';
+
 class Layer {
   const Layer(
     this.takeId, {
@@ -64,8 +66,13 @@ class Layer {
 }
 
 class LayerStack {
-  LayerStack(this.id, this.created, List<Layer> layers)
+  LayerStack(this.id, this.created, List<Layer> layers, {this.grid})
     : layers = List.unmodifiable(_clamped(layers));
+
+  /// Beat grid on the stack's timeline (M5b, d017), or null.
+  final Grid? grid;
+
+  LayerStack withGrid(Grid? g) => LayerStack(id, created, layers, grid: g);
 
   final String id;
   final DateTime created;
@@ -78,7 +85,8 @@ class LayerStack {
     for (final l in layers) l.offset < 0 ? l.copyWith(offset: 0) : l,
   ];
 
-  LayerStack _with(List<Layer> next) => LayerStack(id, created, next);
+  LayerStack _with(List<Layer> next) =>
+      LayerStack(id, created, next, grid: grid);
 
   bool get full => layers.length >= maxLayers;
 
@@ -100,6 +108,7 @@ class LayerStack {
     'version': 1,
     'created': created.toIso8601String(),
     'layers': [for (final l in layers) l.toJson()],
+    if (grid != null) 'grid': grid!.toJson(),
   });
 
   static LayerStack fromJsonString(String id, String s) {
@@ -111,6 +120,7 @@ class LayerStack {
         for (final l in j['layers'] as List)
           Layer.fromJson(l as Map<String, dynamic>),
       ],
+      grid: Grid.fromJson(j['grid'] as Map<String, dynamic>?),
     );
   }
 
@@ -118,10 +128,11 @@ class LayerStack {
   bool operator ==(Object other) =>
       other is LayerStack &&
       other.id == id &&
+      other.grid == grid &&
       other.layers.length == layers.length &&
       Iterable.generate(layers.length)
           .every((i) => other.layers[i] == layers[i]);
 
   @override
-  int get hashCode => Object.hash(id, Object.hashAll(layers));
+  int get hashCode => Object.hash(id, grid, Object.hashAll(layers));
 }

@@ -40,6 +40,9 @@ import '../edit/render_cache.dart';
 import '../edit/sample_export.dart';
 import '../stack/bounce.dart';
 import '../takes/take_store.dart';
+import '../tempo/detect.dart';
+import '../tempo/grid.dart';
+import '../widgets/tempo_controls.dart';
 import '../widgets/waveform.dart';
 
 const _shuttleSpeed = 4.0;
@@ -140,6 +143,19 @@ class _TakeScreenState extends State<TakeScreen> {
   /// Where the last finger went down on the waveform (the scale gesture
   /// starts only after the finger has moved).
   Offset? _downAt;
+  // Beat grid (M5b, d017): snap to beats, click with playback.
+  static bool _snapBeats = true;
+  static bool _click = false;
+
+  /// The take's grid (edit frames), and as displayed (through pitch/tempo).
+  Grid? get _grid => _edits.grid;
+  Grid? get _viewGrid => _grid?.scaled(_tempo);
+  bool get _snapping => _snapBeats && _grid != null;
+
+  /// Nearest beat to display frame [f] when snapping, else [f].
+  int _beatSnap(int f) =>
+      _snapping ? _viewGrid!.nearestBeat(f).clamp(0, _length) : f;
+
   int _toEdit(num t) => (t * _tempo).round();
   int _toDisplay(num e) => (e / _tempo).round();
 
@@ -204,6 +220,7 @@ class _TakeScreenState extends State<TakeScreen> {
     if (AudioControl.ownsPlayer(_playerToken) && PocketAudio.isScrubbing) {
       PocketAudio.endScrub();
     }
+    if (AudioControl.ownsPlayer(_playerToken)) Metronome.follow(false);
     AudioControl.releasePlayer(_playerToken);
     super.dispose();
   }
@@ -487,13 +504,25 @@ class _TakeScreenState extends State<TakeScreen> {
 
   void _split() {
     final p = _toEdit(_position);
-    _apply('Split', _edits.split(_snap(p)), position: p);
+    // On a beat when snapping (exact, so bar-length slices stay exact; the
+    // join's crossfade keeps it click-free), else at a zero crossing.
+    final at = _snapping
+        ? _grid!.nearestBeat(p).clamp(0, _edits.length)
+        : _snap(p);
+    _apply('Split', _edits.split(at), position: p);
   }
 
-  /// The selection in edit frames, snapped to zero crossings.
+  /// The selection in edit frames: on beats when snapping (exact), else
+  /// snapped to zero crossings.
   ({int a, int b})? get _snappedSelection {
     final s = _selStart, e = _selEnd;
     if (s == null || e == null || e <= s) return null;
+    if (_snapping) {
+      final g = _grid!;
+      final a = g.nearestBeat(_toEdit(s)).clamp(0, _edits.length);
+      final b = g.nearestBeat(_toEdit(e)).clamp(0, _edits.length);
+      if (b > a) return (a: a, b: b);
+    }
     return (a: _snap(_toEdit(s)), b: _snap(_toEdit(e)));
   }
 
@@ -611,7 +640,7 @@ class _TakeScreenState extends State<TakeScreen> {
     final s = _edits.sourceAt(_toEdit(_position)) ?? 0;
     _apply(
       'Revert to original',
-      EditList.whole(widget.take.frames),
+      EditList.whole(widget.take.frames).withGrid(_grid), // keeps the tempo
       position: s,
     );
   }
@@ -722,7 +751,7 @@ class _TakeScreenState extends State<TakeScreen> {
 
   void _onLongPressStart(LongPressStartDetails d, double width) {
     if (_handleAt(d.localPosition, width) != null) return;
-    final f = _frameAt(d.localPosition.dx, width);
+    final f = _beatSnap(_frameAt(d.localPosition.dx, width));
     setState(() {
       _selAnchor = f;
       _selStart = _selEnd = f;
@@ -731,7 +760,7 @@ class _TakeScreenState extends State<TakeScreen> {
 
   void _onLongPressMove(LongPressMoveUpdateDetails d, double width) {
     if (_selAnchor == null) return;
-    final f = _frameAt(d.localPosition.dx, width);
+    final f = _beatSnap(_frameAt(d.localPosition.dx, width));
     setState(() {
       _selStart = math.min(_selAnchor!, f);
       _selEnd = math.max(_selAnchor!, f);
@@ -863,7 +892,7 @@ class _TakeScreenState extends State<TakeScreen> {
 
   void _dragFade(bool fadeIn, double dx, double width) {
     final r = _fadeRegion;
-    final x = (_viewStart + dx / width * _viewSpan).round();
+    final x = _beatSnap((_viewStart + dx / width * _viewSpan).round());
     final frames = (fadeIn ? x - r.from : r.to - x).clamp(0, r.to - r.from);
     setState(() => _fadeDrag = (fadeIn: fadeIn, frames: frames));
   }
@@ -1050,6 +1079,18 @@ class _TakeScreenState extends State<TakeScreen> {
     final selColor = scheme.tertiary.withValues(alpha: _loopOn ? 0.35 : 0.18);
     final hasSelection = _selStart != null && _selAnchor == null;
     final fadeDrag = _fadeDrag;
+    // Beat grid as heard; the engine's click follows it.
+    final vg = _viewGrid;
+    if (AudioControl.ownsPlayer(_playerToken)) {
+      Metronome.setGrid(vg?.beatFrames ?? 0, vg?.beatsPerBar ?? 4);
+      Metronome.follow(_click && vg != null, downbeat: vg?.downbeat ?? 0);
+    }
+    final gridLines = vg == null
+        ? const <({double at, bool bar})>[]
+        : [
+            for (final l in vg.lines(_viewStart, _viewStart + _viewSpan))
+              (at: (l.frame - _viewStart) / _viewSpan, bar: l.bar),
+          ];
 
     double toView(num frame) => (frame - _viewStart) / _viewSpan;
     final joins = <int>[
@@ -1076,6 +1117,8 @@ class _TakeScreenState extends State<TakeScreen> {
           PopupMenuButton<String>(
             onSelected: (v) => switch (v) {
               'revert' => _revert(),
+              'snap' => setState(() => _snapBeats = !_snapBeats),
+              'click' => setState(() => _click = !_click),
               'bounce' => _bounceEdited(),
               'export' => _openExportSheet(),
               _ => _deleteTake(),
@@ -1092,6 +1135,20 @@ class _TakeScreenState extends State<TakeScreen> {
                 enabled: _pending == null,
                 child: const Text('Bounce to new take'),
               ),
+              if (_grid != null) ...[
+                CheckedPopupMenuItem(
+                  key: const Key('menu-snap'),
+                  value: 'snap',
+                  checked: _snapBeats,
+                  child: const Text('Snap to beats'),
+                ),
+                CheckedPopupMenuItem(
+                  key: const Key('menu-click'),
+                  value: 'click',
+                  checked: _click,
+                  child: const Text('Click with playback'),
+                ),
+              ],
               PopupMenuItem(
                 value: 'revert',
                 enabled: !_edits.isWhole(widget.take.frames),
@@ -1209,6 +1266,8 @@ class _TakeScreenState extends State<TakeScreen> {
                                             ),
                                       fadeColor: scheme.tertiary,
                                       handleSize: _handleSize,
+                                      gridLines: gridLines,
+                                      gridColor: scheme.onSurface,
                                       bands: [
                                         if (_selStart != null)
                                           (
@@ -1380,6 +1439,13 @@ class _TakeScreenState extends State<TakeScreen> {
           label: Text(_variLabel(t)),
           onPressed: _openTuneSheet,
         ),
+        const SizedBox(width: 8),
+        ActionChip(
+          key: const Key('bpm'),
+          avatar: const Icon(Icons.grid_on, size: 18),
+          label: Text(_viewGrid == null ? 'BPM' : _viewGrid!.bpmLabel),
+          onPressed: _openGridSheet,
+        ),
         const SizedBox(width: 12),
         if (status != null)
           Expanded(
@@ -1393,6 +1459,90 @@ class _TakeScreenState extends State<TakeScreen> {
           ),
       ],
     );
+  }
+
+  /// Sets the take's beat grid: BPM (of the recording), signature, and
+  /// optionally the downbeat at the playhead. Undoable.
+  Future<void> _openGridSheet() async {
+    final g = _grid;
+    final heard = _viewGrid;
+    final c = await showTempoSheet(
+      context,
+      initial: g ?? widget.store.tempo.grid(),
+      title: 'Beat grid',
+      subtitle: heard != null && _tempo != 1
+          ? 'BPM of the recording; with tempo/varispeed you hear '
+                '${heard.bpmLabel} BPM.'
+          : 'Snap edits to beats, see bars, and play a click.',
+      downbeatAtPlayhead: true,
+      removable: g != null,
+      // Detect from the selection if there is one, else the whole take.
+      onDetect: (current) {
+        final sel = _snappedSelection;
+        return detectTakeTempo(
+          source: widget.take.wav.path,
+          edits: _edits,
+          a: sel?.a,
+          b: sel?.b,
+          beatsPerBar: current.beatsPerBar,
+          beatUnit: current.beatUnit,
+        );
+      },
+    );
+    if (c == null || !mounted) return;
+    var next = c.grid;
+    if (next != null && c.downbeatAtPlayhead) {
+      next = next.copyWith(downbeat: _toEdit(_position).toDouble());
+    }
+    if (next != null) widget.store.tempo = widget.store.tempo.withGrid(next);
+    _apply(
+      next == null ? 'Remove tempo' : 'Set tempo',
+      _edits.withGrid(next),
+      position: _toEdit(_position),
+      select: _selStart == null
+          ? null
+          : (start: _toEdit(_selStart!), end: _toEdit(_selEnd!)),
+    );
+  }
+
+  /// Tempo that makes the take play at [bpm] (with the varispeed kept).
+  Future<void> _matchBpm(Tune t, void Function(Tune) set) async {
+    final g = _grid;
+    if (g == null) return;
+    final c = TextEditingController(text: g.scaled(t.timeRatio).bpmLabel);
+    final bpm = await showDialog<double>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Play at BPM'),
+        content: TextField(
+          key: const Key('match-bpm-field'),
+          controller: c,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          onSubmitted: (v) => Navigator.pop(context, double.tryParse(v)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, double.tryParse(c.text)),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+    if (bpm == null || bpm <= 0 || !mounted) return;
+    final tempo = bpm / (g.bpm * t.speed);
+    if (tempo < Tune.minTempo - 1e-9 || tempo > Tune.maxTempo + 1e-9) {
+      _say(
+        '${bpm.toStringAsFixed(1)} BPM needs ${(tempo * 100).round()}% '
+        'tempo; the range is 75–150%.',
+      );
+      return;
+    }
+    set(t.copyWith(tempo: tempo));
   }
 
   /// Pitch & tempo controls. Changes apply live: playback continues on the
@@ -1516,6 +1666,21 @@ class _TakeScreenState extends State<TakeScreen> {
                       ),
                     ],
                   ),
+                  if (_grid != null)
+                    Row(
+                      children: [
+                        Text(
+                          '= ${_grid!.scaled(t.timeRatio).bpmLabel} BPM',
+                          key: const Key('tempo-bpm'),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          key: const Key('match-bpm'),
+                          onPressed: () => _matchBpm(t, (n) => set(n, 'Tempo')),
+                          child: const Text('Play at BPM…'),
+                        ),
+                      ],
+                    ),
                   const SizedBox(height: 8),
                   Text('Varispeed', style: theme.textTheme.titleMedium),
                   Text(

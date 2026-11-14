@@ -25,7 +25,14 @@ class WaveformPainter extends CustomPainter {
     this.fades,
     this.fadeColor,
     this.handleSize = 18,
+    this.gridLines = const [],
+    this.gridColor,
   });
+
+  /// Beat grid (M5b): lines as fractions of the window; bar lines
+  /// stronger.
+  final List<({double at, bool bar})> gridLines;
+  final Color? gridColor;
 
   /// Fade handles (M7) on a region (the take or a selection), as fractions
   /// of the window: the region [from]–[to], and where the fade in reaches
@@ -70,6 +77,19 @@ class WaveformPainter extends CustomPainter {
         canvas.drawRect(
           Rect.fromLTRB(l, 0, r, size.height),
           Paint()..color = b.color,
+        );
+      }
+    }
+    if (gridLines.isNotEmpty) {
+      final c = gridColor ?? color;
+      final beat = Paint()..color = c.withValues(alpha: 0.12);
+      final bar = Paint()..color = c.withValues(alpha: 0.35);
+      for (final g in gridLines) {
+        if (g.at < 0 || g.at > 1) continue;
+        final x = g.at * size.width;
+        canvas.drawRect(
+          Rect.fromLTWH(x - 0.5, 0, g.bar ? 1.5 : 1, size.height),
+          g.bar ? bar : beat,
         );
       }
     }
@@ -211,6 +231,7 @@ class WaveformPainter extends CustomPainter {
       old.playhead != playhead ||
       !listEquals(old.bands, bands) ||
       !listEquals(old.markers, markers) ||
+      !listEquals(old.gridLines, gridLines) ||
       old.fades != fades ||
       old.color != color;
 }

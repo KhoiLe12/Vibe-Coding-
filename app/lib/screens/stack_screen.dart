@@ -21,6 +21,7 @@ import '../edit/render_cache.dart';
 import '../stack/bounce.dart';
 import '../stack/stack.dart';
 import '../takes/take_store.dart';
+import '../widgets/tempo_controls.dart';
 import '../widgets/waveform.dart';
 import 'take_screen.dart';
 
@@ -68,6 +69,10 @@ class _StackScreenState extends State<StackScreen> {
   /// Magnetic snapping on/off (remembered while the app runs).
   static bool _snapOn = true;
 
+  /// Click with playback (M5b), remembered while the app runs. Silent while
+  /// a layer records unless the tempo settings say otherwise (d017).
+  static bool _click = false;
+
   // Sliding a layer: index, raw finger offset, and the (snapped) offset shown.
   int? _dragging;
   double _dragRaw = 0;
@@ -105,8 +110,31 @@ class _StackScreenState extends State<StackScreen> {
   /// (which claims it while open) is popped.
   late int _playerToken;
 
+  List<({double at, bool bar})> _gridLines = const [];
+
+  /// Sets the stack's tempo (undoable): BPM, signature, downbeat.
+  Future<void> _editTempo() async {
+    final g = _stack.grid;
+    final c = await showTempoSheet(
+      context,
+      initial: g ?? widget.store.tempo.grid(),
+      title: 'Stack tempo',
+      subtitle: 'Layers snap to beats; the click can follow playback.',
+      downbeatAtPlayhead: true,
+      removable: g != null,
+    );
+    if (c == null || !mounted) return;
+    var next = c.grid;
+    if (next != null && c.downbeatAtPlayhead) {
+      next = next.copyWith(downbeat: _position.toDouble());
+    }
+    if (next != null) widget.store.tempo = widget.store.tempo.withGrid(next);
+    _apply(next == null ? 'Remove tempo' : 'Set tempo', _stack.withGrid(next));
+  }
+
   @override
   void dispose() {
+    if (AudioControl.ownsPlayer(_playerToken)) Metronome.follow(false);
     _lifecycle.dispose();
     _ticker?.cancel();
     if (PocketAudio.isRecording) PocketAudio.endRecording();
@@ -395,7 +423,11 @@ class _StackScreenState extends State<StackScreen> {
       }
     }
 
-    double gridNear(double x) => (x / sampleRate).roundToDouble() * sampleRate;
+    // The beat grid when the stack has a tempo (M5b), else whole seconds.
+    final grid = _stack.grid;
+    double gridNear(double x) => grid != null
+        ? grid.nearestBeat(x).toDouble()
+        : (x / sampleRate).roundToDouble() * sampleRate;
     // Sound start first (slightly preferred), then the file start.
     consider(raw + onset, [...targets, gridNear(raw + onset)], bias: 0.8);
     consider(raw, [...targets, gridNear(raw)]);
@@ -462,6 +494,11 @@ class _StackScreenState extends State<StackScreen> {
     }
     if (!mounted) return;
     final mix = store.stackMixTake(_stack, path);
+    // The mix's timeline is the stack's: it starts with the stack's tempo.
+    final mixEdits = store.loadEdits(mix.editsId, mix.frames, clamp: true);
+    if (mixEdits.grid == null && _stack.grid != null) {
+      store.saveEdits(mix, mixEdits.withGrid(_stack.grid));
+    }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => TakeScreen(store: store, take: mix),
@@ -515,6 +552,26 @@ class _StackScreenState extends State<StackScreen> {
       math.max(_length, sampleRate * 4) * 1.25,
     );
     final view = _viewFrames;
+    // Beat grid: lines in the lanes, snapping, and the engine's click.
+    final grid = _stack.grid;
+    if (AudioControl.ownsPlayer(_playerToken)) {
+      final clickWhileRecording = widget.store.tempo.clickWhileRecording;
+      Metronome.setGrid(grid?.beatFrames ?? 0, grid?.beatsPerBar ?? 4);
+      Metronome.follow(
+        _click && grid != null && (!_recording || clickWhileRecording),
+        downbeat: grid?.downbeat ?? 0,
+      );
+    }
+    final gridLines = grid == null
+        ? [
+            for (var f = 0.0; f <= view; f += sampleRate)
+              (at: f / view, bar: false),
+          ]
+        : [
+            for (final l in grid.lines(0, view, maxLines: 96))
+              (at: l.frame / view, bar: l.bar),
+          ];
+    _gridLines = gridLines;
     return PopScope(
       canPop: !_recording,
       child: Scaffold(
@@ -545,11 +602,29 @@ class _StackScreenState extends State<StackScreen> {
             PopupMenuButton<String>(
               enabled: !_recording,
               onSelected: (v) => switch (v) {
+                'tempo' => _editTempo(),
+                'click' => setState(() => _click = !_click),
                 'edit' => _editWholeStack(),
                 'bounce' => _bounce(),
                 _ => _deleteStack(),
               },
               itemBuilder: (_) => [
+                PopupMenuItem(
+                  key: const Key('stack-tempo'),
+                  value: 'tempo',
+                  child: Text(
+                    _stack.grid == null
+                        ? 'Set tempo…'
+                        : 'Tempo: ${_stack.grid!.label}',
+                  ),
+                ),
+                if (_stack.grid != null)
+                  CheckedPopupMenuItem(
+                    key: const Key('stack-click'),
+                    value: 'click',
+                    checked: _click,
+                    child: const Text('Click with playback'),
+                  ),
                 PopupMenuItem(
                   value: 'edit',
                   enabled: _length > 0,
@@ -803,7 +878,7 @@ class _StackScreenState extends State<StackScreen> {
                             ? (_snapped ? scheme.error : scheme.tertiary)
                             : scheme.primary,
                         background: scheme.surfaceContainerHighest,
-                        gridStep: sampleRate / view,
+                        gridLines: _gridLines,
                         gridColor: scheme.outline,
                         onset: (a?.onset ?? 0) / view,
                         onsetColor: scheme.tertiary,
@@ -887,7 +962,7 @@ class _LanePainter extends CustomPainter {
     required this.playhead,
     required this.color,
     required this.background,
-    required this.gridStep,
+    required this.gridLines,
     required this.gridColor,
     required this.onset,
     required this.onsetColor,
@@ -895,7 +970,8 @@ class _LanePainter extends CustomPainter {
 
   final double onset; // sound start, as a fraction of the width
   final Color onsetColor;
-  final double gridStep; // one second, as a fraction of the width
+  // Beats/bars (with a tempo) or seconds, as fractions of the width.
+  final List<({double at, bool bar})> gridLines;
   final Color gridColor;
   final Peaks? peaks;
   final double start, width, playhead;
@@ -922,13 +998,16 @@ class _LanePainter extends CustomPainter {
       ).paint(canvas, Size(w, size.height));
       canvas.restore();
     }
-    // 1-second grid, drawn over the layer so it shows through (the snap
-    // points; human, 2026-11-14: it was hidden under the lane background).
-    if (gridStep > 0) {
-      final g = Paint()..color = gridColor.withValues(alpha: 0.7);
-      for (var x = 0.0; x <= 1.0; x += gridStep) {
-        canvas.drawRect(Rect.fromLTWH(x * size.width, 0, 1, size.height), g);
-      }
+    // The grid (snap points), drawn over the layer so it shows through
+    // (human, 2026-11-14: it was hidden under the lane background).
+    final beat = Paint()..color = gridColor.withValues(alpha: 0.4);
+    final bar = Paint()..color = gridColor.withValues(alpha: 0.9);
+    for (final g in gridLines) {
+      if (g.at < 0 || g.at > 1) continue;
+      canvas.drawRect(
+        Rect.fromLTWH(g.at * size.width, 0, g.bar ? 1.5 : 1, size.height),
+        g.bar ? bar : beat,
+      );
     }
     // Where the sound starts: the anchor that snaps.
     if (w > 1) {
@@ -960,5 +1039,6 @@ class _LanePainter extends CustomPainter {
       o.width != width ||
       o.playhead != playhead ||
       o.color != color ||
+      o.gridLines != gridLines ||
       o.peaks != peaks;
 }

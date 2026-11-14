@@ -52,3 +52,15 @@ class Calibration {
     return (median * 48).round(); // 48 frames per ms
   }
 }
+
+/// Round trip (frames) to place a recording's downbeat after a count-in
+/// (M5b, d017): the measured one for the Record screen's mode, else the
+/// loop pedal's for the same route, else what the OS reports, else 0.
+int roundTripEstimate(Calibration c, String route) {
+  final measured =
+      c.framesFor('$route/measurement') ?? c.framesFor('$route/default-mode');
+  if (measured != null) return measured;
+  final r = PocketAudio.reportedLatency;
+  if (r == null) return 0;
+  return ((r.input + r.output + 2 * r.ioBuffer) * 48000).round();
+}

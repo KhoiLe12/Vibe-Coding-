@@ -40,10 +40,20 @@ class Recorder {
   // recorded over a stack can be lined up (M6, wiki/features/layers.md).
   void process(const float* mono, uint32_t frames, int64_t stamp = -1);
   int64_t startStamp() const { return startStamp_.load(); }
+  // Count-in (M5b, wiki/decisions/d017-tempo-everywhere.md): a take begun
+  // with `held` writes nothing until release(n), called on the audio thread
+  // at the start of a callback; it then skips n more frames and writes from
+  // there, so recording starts on an exact frame.
+  void release(int64_t skipFrames) {
+    if (hold_.load(std::memory_order_relaxed) == -1) {
+      hold_.store(skipFrames < 0 ? 0 : skipFrames, std::memory_order_relaxed);
+    }
+  }
+  bool held() const { return hold_.load(std::memory_order_relaxed) == -1; }
 
   // ---- control (any non-audio thread) ----
   // Starts a take: opens the WAV and the writer thread. Returns PS_* code.
-  int32_t begin(const char* wavPath, uint32_t sampleRate);
+  int32_t begin(const char* wavPath, uint32_t sampleRate, bool held = false);
   // Finishes the take: drains, finalizes the WAV, writes the peaks file
   // (skipped when peaksPath is null or empty). Returns PS_* code.
   int32_t end(const char* peaksPath);
@@ -87,6 +97,8 @@ class Recorder {
 
   std::atomic<int64_t> framesWritten_{0};
   std::atomic<int64_t> startStamp_{-1};
+  // -1 = held (writes nothing), n > 0 = frames still to skip, 0 = writing.
+  std::atomic<int64_t> hold_{0};
   std::atomic<int64_t> dropped_{0};
   std::atomic<bool> writeError_{false};
 

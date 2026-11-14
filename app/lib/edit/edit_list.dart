@@ -12,6 +12,8 @@ import 'dart:math' as math;
 
 import 'package:pocket_audio/pocket_audio.dart' show Fades, PlayClip;
 
+import '../tempo/grid.dart';
+
 export 'package:pocket_audio/pocket_audio.dart' show Fades;
 
 class Clip {
@@ -290,7 +292,7 @@ class Tune {
 }
 
 class EditList {
-  EditList(List<Clip> clips, {this.tune = Tune.none})
+  EditList(List<Clip> clips, {this.tune = Tune.none, this.grid})
     : clips = List.unmodifiable(clips);
 
   /// The whole recording as one clip.
@@ -302,10 +304,17 @@ class EditList {
   /// Pitch/tempo for the whole take (M4).
   final Tune tune;
 
-  /// Same clips, new pitch/tempo.
-  EditList withTune(Tune next) => EditList(clips, tune: next);
+  /// Beat grid on the edit timeline (M5b, d017), or null. Not an edit:
+  /// [isWhole] ignores it.
+  final Grid? grid;
 
-  EditList _with(List<Clip> next) => EditList(next, tune: tune);
+  /// Same clips, new pitch/tempo.
+  EditList withTune(Tune next) => EditList(clips, tune: next, grid: grid);
+
+  /// Same clips, another beat grid (null = none).
+  EditList withGrid(Grid? next) => EditList(clips, tune: tune, grid: next);
+
+  EditList _with(List<Clip> next) => EditList(next, tune: tune, grid: grid);
 
   int get length => clips.fold(0, (sum, c) => sum + c.length);
 
@@ -531,31 +540,39 @@ class EditList {
     ]);
   }
 
+  /// `grid` (M5b) is optional and needs no version bump: older readers
+  /// ignore it.
   /// Version 3 adds per-clip `reverse`/`fades` and `tune.varispeed` (M7);
   /// version 2 added `tune`; version 1 files (M3) load with no transpose.
   String toJsonString() => jsonEncode({
     'version': 3,
     'clips': [for (final c in clips) c.toJson()],
     if (tune != Tune.none) 'tune': tune.toJson(),
+    if (grid != null) 'grid': grid!.toJson(),
   });
 
   static EditList fromJsonString(String s) {
     final j = jsonDecode(s) as Map<String, dynamic>;
-    return EditList([
-      for (final c in j['clips'] as List)
-        Clip.fromJson(c as Map<String, dynamic>),
-    ], tune: Tune.fromJson(j['tune'] as Map<String, dynamic>?));
+    return EditList(
+      [
+        for (final c in j['clips'] as List)
+          Clip.fromJson(c as Map<String, dynamic>),
+      ],
+      tune: Tune.fromJson(j['tune'] as Map<String, dynamic>?),
+      grid: Grid.fromJson(j['grid'] as Map<String, dynamic>?),
+    );
   }
 
   @override
   bool operator ==(Object other) =>
       other is EditList &&
       other.tune == tune &&
+      other.grid == grid &&
       other.clips.length == clips.length &&
       Iterable.generate(clips.length).every((i) => other.clips[i] == clips[i]);
 
   @override
-  int get hashCode => Object.hash(tune, Object.hashAll(clips));
+  int get hashCode => Object.hash(tune, grid, Object.hashAll(clips));
 }
 
 /// Unlimited undo/redo over immutable snapshots (d012): clip lists, stacks.

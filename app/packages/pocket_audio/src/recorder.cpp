@@ -43,9 +43,21 @@ Recorder::~Recorder() { end(nullptr); }
 void Recorder::process(const float* in, uint32_t frames, int64_t stamp) {
   const float target = targetGain_.load(std::memory_order_relaxed);
   inProcess_.fetch_add(1);
-  const bool writing = active_.load() && !paused_.load(std::memory_order_relaxed);
+  bool writing = active_.load() && !paused_.load(std::memory_order_relaxed);
+  // Count-in: hold, or skip to the frame where the take starts.
+  uint32_t skip = 0;
+  if (writing) {
+    const int64_t h = hold_.load(std::memory_order_relaxed);
+    if (h == -1) {
+      writing = false;
+    } else if (h > 0) {
+      skip = static_cast<uint32_t>(std::min<int64_t>(h, frames));
+      hold_.store(h - skip, std::memory_order_relaxed);
+      writing = skip < frames;
+    }
+  }
   if (writing && startStamp_.load(std::memory_order_relaxed) == -2) {
-    startStamp_.store(stamp);  // first frames of the take
+    startStamp_.store(stamp < 0 ? stamp : stamp + skip);  // first frame
   }
 
   float peak = 0.0f;
@@ -67,10 +79,13 @@ void Recorder::process(const float* in, uint32_t frames, int64_t stamp) {
       peak = std::max(peak, a);
       clip = clip || a >= 1.0f;
     }
-    if (writing) {
-      const size_t written = ring_.write(out, n);
-      if (written < n) dropped_.fetch_add(static_cast<int64_t>(n - written));
+    if (writing && skip < n) {
+      const size_t written = ring_.write(out + skip, n - skip);
+      if (written < n - skip) {
+        dropped_.fetch_add(static_cast<int64_t>(n - skip - written));
+      }
     }
+    skip = skip > n ? skip - n : 0;
     in += n;
     frames -= n;
   }
@@ -80,7 +95,8 @@ void Recorder::process(const float* in, uint32_t frames, int64_t stamp) {
   if (clip) clipped_.store(true, std::memory_order_relaxed);
 }
 
-int32_t Recorder::begin(const char* wavPath, uint32_t sampleRate) {
+int32_t Recorder::begin(const char* wavPath, uint32_t sampleRate,
+                        bool held) {
   std::lock_guard<std::mutex> lock(controlMutex_);
   if (active_.load()) return PS_ERROR_ALREADY_RUNNING;
   if (!wav_.open(wavPath, sampleRate)) return PS_ERROR_FILE;
@@ -92,6 +108,7 @@ int32_t Recorder::begin(const char* wavPath, uint32_t sampleRate) {
   startStamp_.store(-2);  // set by the first callback that writes
   writeError_.store(false);
   paused_.store(false);
+  hold_.store(held ? -1 : 0);
   {
     std::lock_guard<std::mutex> peaksLock(peaksMutex_);
     peaks_.clear();

@@ -31,6 +31,8 @@ Engine ([[audio-engine]]): the player's timeline is now a set of **tracks** (cli
 - **Bounce** mixes the stack into a new take.
 - Recording on top uses iOS's default mode so the stack is heard at normal loudness ([[d014-looper-m5a]]).
 
+**Tempo (M5b, [[beat-grid]]):** a stack can have a tempo (⋮ → *Set tempo…*). Lanes then show beats and bars, layers snap to beats instead of whole seconds, and ⋮ → *Click with playback* adds a click. The click is silent while a layer records, unless *Click while recording* is on.
+
 ## Acceptance criteria
 *Proposed during planning, approved by the human 2026-11-14.*
 - [x] A recorded layer lines up with what was heard within 1 ms after calibration — iPhone 2026-11-14 (human: "works great"); host: full-callback simulation with 5/30/62 ms rooms, within 1 ms

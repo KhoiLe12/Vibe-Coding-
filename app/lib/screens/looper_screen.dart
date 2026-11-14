@@ -4,8 +4,10 @@
 // Loop pedal, part one (wiki/features/loop-pedal.md, wiki/decisions/
 // d014-looper-m5a.md): one big button (record → close loop → overdub on/off),
 // play/stop, undo/redo layer, clear, per-layer volume/mute/solo, calibration
-// per route, bounce to a new take. The loop itself runs in the C++ audio
-// callback; this screen only sends commands and shows state.
+// per route, bounce to a new take. Part two (M5b, d017): tempo sync with
+// count-in, bar-snapped loops and a beat light; feedback mode. The loop
+// itself runs in the C++ audio callback; this screen only sends commands
+// and shows state.
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -15,7 +17,10 @@ import 'package:pocket_audio/pocket_audio.dart';
 
 import '../audio/audio_control.dart';
 import '../audio/calibration.dart';
+import '../edit/edit_list.dart';
 import '../takes/take_store.dart';
+import '../tempo/grid.dart';
+import '../widgets/tempo_controls.dart';
 import '../widgets/waveform.dart';
 
 class LooperScreen extends StatefulWidget {
@@ -39,6 +44,14 @@ class _LooperScreenState extends State<LooperScreen> {
   // boosts were a wrong fix for measurement mode's quiet speaker, d014).
   static double _micGainDb = 0;
   static double _loopVolumeDb = 0;
+  // Tempo sync and feedback (M5b), remembered while the app runs.
+  static bool _sync = false;
+  static double _feedbackDb = 0;
+  late TempoSettings _tempo = widget.store.tempo;
+
+  /// The grid of the loop that exists (set when Record is pressed with
+  /// sync on), else null.
+  Grid? _loopGrid;
 
   static double _db(double db) => math.pow(10, db / 20).toDouble();
 
@@ -99,6 +112,8 @@ class _LooperScreenState extends State<LooperScreen> {
     Looper.inputGain = _db(_micGainDb);
     Looper.outputGain = _db(_loopVolumeDb);
     Looper.resetClip();
+    _applySync();
+    Looper.feedbackDb = _feedbackDb;
     _route = PocketAudio.outputRoute;
     _latency = _calibration.framesFor(_key(_route));
     if (_latency != null) Looper.latencyFrames = _latency!;
@@ -154,6 +169,51 @@ class _LooperScreenState extends State<LooperScreen> {
     if (_state == LooperState.idle && _layerSettings.isNotEmpty) {
       _layerSettings.clear();
     }
+    if (_state == LooperState.idle && _length == 0) _loopGrid = null;
+  }
+
+  void _applySync() {
+    final g = _tempo.grid();
+    Looper.setSync(
+      _sync ? g.beatFrames : 0,
+      g.beatsPerBar,
+      _tempo.countInBeats,
+    );
+    Looper.click = _sync && _tempo.clickWhileRecording;
+  }
+
+  Future<void> _editTempo() async {
+    final c = await showTempoSheet(
+      context,
+      initial: _tempo.grid(),
+      title: 'Tempo sync',
+      subtitle: 'Loops close on the nearest whole bar.',
+      countIn: true,
+      countInBars: _tempo.countInBars,
+      click: true,
+      clickWhileRecording: _tempo.clickWhileRecording,
+    );
+    if (c == null || c.grid == null || !mounted) return;
+    setState(() {
+      _tempo = _tempo
+          .withGrid(c.grid!)
+          .copyWith(
+            countInBars: c.countInBars,
+            clickWhileRecording: c.clickWhileRecording,
+          );
+      _sync = true;
+    });
+    widget.store.tempo = _tempo;
+    _applySync();
+  }
+
+  /// The main button. Record latches the tempo for the new loop.
+  void _press() {
+    if (_state == LooperState.idle) {
+      _applySync();
+      _loopGrid = _sync ? _tempo.grid() : null;
+    }
+    Looper.press();
   }
 
   void _applyGains() {
@@ -240,6 +300,12 @@ class _LooperScreenState extends State<LooperScreen> {
     final t = widget.store.newTake();
     try {
       Looper.bounce(t.wav, passes: passes);
+      // A synced loop keeps its tempo as the take's beat grid.
+      final g = _loopGrid;
+      if (g != null) {
+        final take = widget.store.list().where((x) => x.id == t.id).first;
+        widget.store.saveEdits(take, EditList.whole(take.frames).withGrid(g));
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Bounced to a new take in your list.')),
@@ -284,6 +350,11 @@ class _LooperScreenState extends State<LooperScreen> {
           label: 'Record',
           icon: Icons.fiber_manual_record,
           color: s.error,
+        ),
+        LooperState.countIn => (
+          label: 'Counting in · cancel',
+          icon: Icons.timer_outlined,
+          color: s.outline,
         ),
         LooperState.recording => (
           label: 'Close loop',
@@ -408,7 +479,10 @@ class _LooperScreenState extends State<LooperScreen> {
                         state: _state,
                         position: _position,
                         length: _length,
+                        grid: _loopGrid,
                       ),
+                      const SizedBox(height: 4),
+                      _tempoRow(theme),
                       const SizedBox(height: 8),
                       Row(
                         children: [
@@ -519,7 +593,7 @@ class _LooperScreenState extends State<LooperScreen> {
                                         !_calibrating &&
                                         !_busy &&
                                         _state != LooperState.closing
-                                    ? Looper.press
+                                    ? _press
                                     : null,
                                 icon: Icon(main.icon, size: 36),
                                 label: Text(main.label),
@@ -533,6 +607,85 @@ class _LooperScreenState extends State<LooperScreen> {
                 ),
         ),
       ),
+    );
+  }
+
+  /// Tempo sync, the beat light and feedback.
+  Widget _tempoRow(ThemeData theme) {
+    final g = _loopGrid;
+    final counting = _state == LooperState.countIn;
+    final showBeat =
+        g != null &&
+        (counting ||
+            _length > 0 ||
+            _state == LooperState.recording ||
+            _state == LooperState.closing);
+    final playingBeat = _state != LooperState.stopped;
+    return Row(
+      children: [
+        FilterChip(
+          key: const Key('looper-sync'),
+          label: Text(
+            _sync
+                ? '${_tempo.grid().label}'
+                      '${_tempo.countInBars > 0 ? ' · ${_tempo.countInBars} bar in' : ''}'
+                : 'Free',
+          ),
+          avatar: const Icon(Icons.speed, size: 18),
+          selected: _sync,
+          onSelected: _state == LooperState.idle
+              ? (on) {
+                  if (on) {
+                    _editTempo();
+                  } else {
+                    setState(() => _sync = false);
+                    _applySync();
+                  }
+                }
+              : null,
+        ),
+        const SizedBox(width: 8),
+        if (showBeat)
+          Expanded(
+            child: Center(
+              child: BeatLight(
+                key: const Key('looper-beat'),
+                beat: playingBeat ? Looper.beatPosition / g.beatFrames : null,
+                beatsPerBar: g.beatsPerBar,
+                countingIn: counting,
+              ),
+            ),
+          )
+        else
+          const Spacer(),
+        PopupMenuButton<double>(
+          key: const Key('looper-feedback'),
+          tooltip: 'Feedback: older layers fade each pass',
+          initialValue: _feedbackDb,
+          onSelected: (v) {
+            setState(() => _feedbackDb = v);
+            Looper.feedbackDb = v;
+          },
+          itemBuilder: (_) => [
+            for (final v in const [0.0, 1.0, 3.0, 6.0])
+              PopupMenuItem(
+                value: v,
+                child: Text(
+                  v == 0 ? 'Feedback off' : '−${v.round()} dB per pass',
+                ),
+              ),
+          ],
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+            child: Text(
+              _feedbackDb == 0
+                  ? 'Feedback off'
+                  : 'Feedback −${_feedbackDb.round()} dB',
+              style: theme.textTheme.labelLarge,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -635,25 +788,39 @@ class _LoopProgress extends StatelessWidget {
     required this.state,
     required this.position,
     required this.length,
+    this.grid,
   });
 
   final LooperState state;
   final int position, length;
+  final Grid? grid;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final recording = state == LooperState.recording;
     final secs = (recording ? position : length) / sampleRate;
+    final g = grid;
+    String bars(int frames) {
+      if (g == null) return '';
+      final n = frames / g.barFrames;
+      return recording
+          ? ' · bar ${n.floor() + 1}'
+          : ' · ${n.round()} ${n.round() == 1 ? 'bar' : 'bars'}';
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          recording
+          state == LooperState.countIn
+              ? 'Counting in…'
+              : recording
               ? 'Recording first take: ${secs.toStringAsFixed(1)} s'
+                    '${bars(position)}'
               : length == 0
               ? 'No loop'
-              : 'Loop ${secs.toStringAsFixed(2)} s'
+              : 'Loop ${secs.toStringAsFixed(2)} s${bars(length)}'
                     '${state == LooperState.overdubbing || state == LooperState.armed ? ' — recording a layer' : ''}'
                     '${state == LooperState.stopped ? ' — stopped' : ''}',
           style: theme.textTheme.titleMedium,

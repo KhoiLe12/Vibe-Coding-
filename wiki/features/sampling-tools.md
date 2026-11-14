@@ -9,7 +9,7 @@ tags: [m7, sampling]
 
 For turning random sounds into usable samples (raw/ideas/2026-10-26-scope.md). Milestone M7. Design: [[d016-sampling-tools]].
 
-**Built 2026-11-14. iPhone check 1 (human): everything works well except fades** — selecting a region by finger was too clunky — and *Keep voice natural* didn't apply to varispeed. Both changed the same day; the needle that replaced finger selection was **still clunky (check 2)**, so fades became corner handles on the take or selection (below); awaiting the human's re-check. On the take screen: a ✨ **Sample tools** button (right of the transport) opens Reverse, Remove fades, Normalize and Trim silence, which act on the selection or, without one, the whole take. Fades are handles in the waveform's top corners. **Varispeed** is a third chip next to Pitch and Tempo, with ± semitone buttons in the same sheet. ⋮ → **Export samples…** picks One-shot / Loop / Slices and a format, then opens the share sheet. Reversed clips show ⇄ in the clip strip; reversed and faded audio shows in the waveform.
+**Built 2026-11-14. iPhone check 1 (human): everything works well except fades** — selecting a region by finger was too clunky — and *Keep voice natural* didn't apply to varispeed. Both changed the same day; the needle that replaced finger selection was **still clunky (check 2)**, so fades became corner handles on the take or selection (below); **approved by the human 2026-11-14 ("this looks great")**; committed. On the take screen: a ✨ **Sample tools** button (right of the transport) opens Reverse, Remove fades, Normalize and Trim silence, which act on the selection or, without one, the whole take. Fades are handles in the waveform's top corners. **Varispeed** is a third chip next to Pitch and Tempo, with ± semitone buttons in the same sheet. ⋮ → **Export samples…** picks One-shot / Loop / Slices and a format, then opens the share sheet. Reversed clips show ⇄ in the clip strip; reversed and faded audio shows in the waveform.
 
 ## Behaviour
 - **Reverse** the selection or whole take: it plays backwards; reversing again restores it.
@@ -30,7 +30,7 @@ For turning random sounds into usable samples (raw/ideas/2026-10-26-scope.md). M
 ## Acceptance criteria
 *From the plan (raw/plan/pocket-studio-plan.md §7), with measurable checks proposed while building — to be approved by the human.*
 - [ ] Every tool is non-destructive and undoable ([[non-destructive-editing]], [[undo-history]]) — host: reverse, fade, normalize, varispeed undo back to the original edit list; nothing writes a recording. iPhone: pending
-- [ ] Exported slices open correctly in common DAWs and samplers — host: WAV headers, lengths and sample values checked by a parser; needs the human to open them in a DAW
+- [x] Exported slices open correctly in common DAWs and samplers — host: WAV headers, lengths and sample values checked by a parser; human 2026-11-14: a slice AirDropped to a Mac opened in FL Studio
 - [ ] *(proposed)* Varispeed changes pitch by exactly the set interval with the matching length — host: within 1 cent at ×0.5/×1.5/×2, exact length, no aliasing at ×4; iPhone: by ear
 - [ ] *(proposed)* An exported loop plays round without a click — host: wrap no steeper than the signal itself, at 48 and 44.1 kHz
 - [ ] *(proposed)* An export matches playback — host: 24-bit export equals the clips sample for sample (within 1 LSB), reversed and with gain

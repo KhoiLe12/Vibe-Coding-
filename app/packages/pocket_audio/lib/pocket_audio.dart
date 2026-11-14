@@ -313,6 +313,32 @@ abstract final class PocketAudio {
     }
   }
 
+  /// Starts a take after a count-in (M5b, wiki/decisions/d017-tempo-everywhere.md):
+  /// the metronome ([Metronome.setGrid]) clicks [countInFrames], and the
+  /// take starts on exactly the frame after. With [clickAfter] the click
+  /// keeps going while recording (headphones).
+  static void beginRecordingCounted(
+    String wavPath, {
+    required int countInFrames,
+    bool clickAfter = false,
+    int sampleRate = 48000,
+  }) {
+    final path = wavPath.toNativeUtf8();
+    try {
+      _check(
+        bindings.ps_recorder_begin_counted(
+          path.cast(),
+          sampleRate,
+          countInFrames,
+          clickAfter ? 1 : 0,
+        ),
+        'could not start recording to $wavPath',
+      );
+    } finally {
+      calloc.free(path);
+    }
+  }
+
   /// Finishes the take and writes its peaks file to [peaksPath] (if given).
   static void endRecording({String? peaksPath}) {
     final path = (peaksPath ?? '').toNativeUtf8();
@@ -652,6 +678,45 @@ abstract final class PocketAudio {
     }
   }
 
+  /// Detects the tempo of [clips] of [source] as they play (M5b): BPM in
+  /// [minBpm]–[maxBpm], the frame of the first downbeat (on the clips'
+  /// timeline) and a confidence 0..1; null if no beat was found. Analyses at
+  /// most [maxFrames] (0 = all). Blocking: call from a background isolate.
+  static ({double bpm, double firstBeat, double confidence})? detectTempo({
+    required String source,
+    required List<PlayClip> clips,
+    double minBpm = 60,
+    double maxBpm = 200,
+    int beatsPerBar = 4,
+    int maxFrames = 90 * 48000,
+  }) {
+    final c = _NativeClips(clips);
+    final s = source.toNativeUtf8();
+    final out = calloc<ffi.Double>(3);
+    try {
+      final ok = bindings.ps_detect_tempo(
+        s.cast(),
+        c.starts,
+        c.ends,
+        c.gains,
+        c.fades,
+        c.reverse,
+        c.n,
+        minBpm,
+        maxBpm,
+        beatsPerBar,
+        maxFrames,
+        out,
+      );
+      if (ok == 0) return null;
+      return (bpm: out[0], firstBeat: out[1], confidence: out[2]);
+    } finally {
+      c.free();
+      calloc.free(s);
+      calloc.free(out);
+    }
+  }
+
   /// Largest absolute sample in [ranges] of the mono float WAV at [path].
   /// Blocking (reads the audio): call from a background isolate for long
   /// ranges. Throws if the file can't be read.
@@ -720,6 +785,33 @@ enum LooperState {
 
   /// Overdub waiting for the loop start.
   armed,
+
+  /// Tempo sync: counting in before the first take (M5b).
+  countIn,
+}
+
+/// Metronome in the audio engine (M5b, wiki/decisions/d017-tempo-everywhere.md):
+/// count-in before a take and a click that follows playback.
+abstract final class Metronome {
+  /// Beat length in frames (0 = off) and beats per bar.
+  static void setGrid(double beatFrames, int beatsPerBar) =>
+      bindings.ps_metronome_set_grid(beatFrames, beatsPerBar);
+
+  /// Click with playback; musical time = player position − [downbeat]
+  /// (display frames).
+  static void follow(bool on, {double downbeat = 0}) =>
+      bindings.ps_metronome_follow(on ? 1 : 0, downbeat);
+
+  /// Musical frame of the count-in/recording clock (negative while
+  /// counting in), or null when not counting.
+  static int? get musical {
+    final m = bindings.ps_metronome_musical();
+    return m == -0x8000000000000000 ? null : m;
+  }
+
+  /// The click's sample at musical [frame] (tests).
+  static double click(double frame, double beatFrames, int beatsPerBar) =>
+      bindings.ps_metronome_click(frame, beatFrames, beatsPerBar);
 }
 
 /// The loop pedal in the audio engine (wiki/decisions/d014-looper-m5a.md).
@@ -798,4 +890,18 @@ abstract final class Looper {
   /// Tests: prepares layer buffers now instead of waiting for the service
   /// thread.
   static void service() => bindings.ps_looper_service();
+
+  /// Tempo sync (M5b): [beatFrames] 0 = free loops. Taken when Record is
+  /// pressed.
+  static void setSync(double beatFrames, int beatsPerBar, int countInBeats) =>
+      bindings.ps_looper_set_sync(beatFrames, beatsPerBar, countInBeats);
+
+  /// Click while recording/playing a synced loop.
+  static set click(bool on) => bindings.ps_looper_set_click(on ? 1 : 0);
+
+  /// Feedback mode: every layer fades by this many dB per pass (0 = off).
+  static set feedbackDb(double db) => bindings.ps_looper_set_feedback(db);
+
+  /// Musical frame being heard (negative during a count-in).
+  static int get beatPosition => bindings.ps_looper_beat_position();
 }

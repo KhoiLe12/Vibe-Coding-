@@ -139,6 +139,41 @@ external int ps_recorder_begin(ffi.Pointer<ffi.Char> wav_path, int sample_rate);
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Char>)>()
 external int ps_recorder_end(ffi.Pointer<ffi.Char> peaks_path);
 
+/// Count-in (M5b): begins a take that writes nothing until the metronome
+/// (set with ps_metronome_set_grid) has clicked count_in_frames; recording
+/// then starts on that exact frame. click_after: keep clicking while
+/// recording (for headphones).
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<ffi.Char>, ffi.Int32, ffi.Int64, ffi.Int32)
+>()
+external int ps_recorder_begin_counted(
+  ffi.Pointer<ffi.Char> wav_path,
+  int sample_rate,
+  int count_in_frames,
+  int click_after,
+);
+
+/// Metronome grid: beat length in frames (0 = off) and beats per bar.
+@ffi.Native<ffi.Void Function(ffi.Double, ffi.Int32)>()
+external void ps_metronome_set_grid(double beat_frames, int beats_per_bar);
+
+/// Click with playback; musical time = player position − downbeat.
+@ffi.Native<ffi.Void Function(ffi.Int32, ffi.Double)>()
+external void ps_metronome_follow(int on, double downbeat);
+
+/// Musical frame of the count-in/recording clock (negative while counting
+/// in); INT64_MIN when not counting.
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_metronome_musical();
+
+/// The click's sample at musical frame `frame` (tests, drawing).
+@ffi.Native<ffi.Float Function(ffi.Double, ffi.Double, ffi.Int32)>()
+external double ps_metronome_click(
+  double frame,
+  double beat_frames,
+  int beats_per_bar,
+);
+
 /// While paused, input is metered but not written; resume appends to the
 /// same take.
 @ffi.Native<ffi.Void Function(ffi.Int32)>()
@@ -491,6 +526,29 @@ external void ps_looper_process_offline(
 @ffi.Native<ffi.Void Function()>()
 external void ps_looper_service();
 
+/// Tempo sync (M5b, wiki/decisions/d017-tempo-everywhere.md). beat_frames 0 =
+/// free loops. With sync, Record counts in `count_in_beats` beats (clicked),
+/// the loop's frame 0 is the performed downbeat (latency-compensated), and
+/// closing snaps to the nearest whole number of bars.
+@ffi.Native<ffi.Void Function(ffi.Double, ffi.Int32, ffi.Int32)>()
+external void ps_looper_set_sync(
+  double beat_frames,
+  int beats_per_bar,
+  int count_in_beats,
+);
+
+/// Click while recording/playing (synced loops only; for headphones).
+@ffi.Native<ffi.Void Function(ffi.Int32)>()
+external void ps_looper_set_click(int on);
+
+/// Feedback mode: every layer fades by this many dB per pass (0 = off).
+@ffi.Native<ffi.Void Function(ffi.Float)>()
+external void ps_looper_set_feedback(double db_per_pass);
+
+/// Musical frame being heard (negative during a count-in), for a beat light.
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_looper_beat_position();
+
 /// Current output route name (calibration is per route). Valid until the next
 /// call on the same thread.
 @ffi.Native<ffi.Pointer<ffi.Char> Function()>()
@@ -621,6 +679,40 @@ external int ps_export_wav(
 
 /// Largest absolute sample in count ranges [starts[i], ends[i]) of a mono
 /// float WAV (for normalize). -1 if the file can't be read.
+/// Tempo detection (M5b): plays the clips like ps_export_wav (first
+/// max_frames; 0 = all) and finds BPM in [min_bpm, max_bpm], the first
+/// downbeat's frame and a confidence 0..1 → out[0..2]. Returns 1 if found.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Int32,
+    ffi.Double,
+    ffi.Double,
+    ffi.Int32,
+    ffi.Int64,
+    ffi.Pointer<ffi.Double>,
+  )
+>()
+external int ps_detect_tempo(
+  ffi.Pointer<ffi.Char> source_path,
+  ffi.Pointer<ffi.Int64> starts,
+  ffi.Pointer<ffi.Int64> ends,
+  ffi.Pointer<ffi.Float> gains,
+  ffi.Pointer<ffi.Double> fades,
+  ffi.Pointer<ffi.Uint8> reverse,
+  int count,
+  double min_bpm,
+  double max_bpm,
+  int beats_per_bar,
+  int max_frames,
+  ffi.Pointer<ffi.Double> out,
+);
+
 @ffi.Native<
   ffi.Double Function(
     ffi.Pointer<ffi.Char>,
@@ -729,3 +821,5 @@ const int PS_LOOPER_OVERDUBBING = 4;
 const int PS_LOOPER_STOPPED = 5;
 
 const int PS_LOOPER_ARMED = 6;
+
+const int PS_LOOPER_COUNT_IN = 7;

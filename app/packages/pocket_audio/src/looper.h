@@ -72,6 +72,7 @@ class Looper {
     kOverdubbing = 4,
     kStopped = 5,      // loop exists, not playing
     kArmed = 6,        // overdub waits for the loop start
+    kCountIn = 7,      // tempo sync: clicking the count-in (M5b)
   };
 
   Looper();
@@ -107,6 +108,22 @@ class Looper {
   void resetClip() { clipped_.store(false); }
   // Effective linear gain of layer i (0 = base take), after mute/solo.
   void setLayerGain(int32_t layer, float gain);
+  // Tempo sync (M5b, d017): beatFrames 0 = free loops. Taken when Record
+  // is pressed; a loop keeps the grid it was recorded with.
+  void setSync(double beatFrames, int32_t beatsPerBar, int32_t countInBeats) {
+    syncBeat_.store(beatFrames > 0 ? beatFrames : 0.0);
+    syncBpb_.store(beatsPerBar > 0 ? beatsPerBar : 4);
+    countInBeats_.store(countInBeats < 0 ? 0 : countInBeats);
+  }
+  // Click while recording/playing a synced loop (for headphones).
+  void setClick(bool on) { click_.store(on); }
+  // Feedback mode: every layer fades by this many dB per pass (0 = off).
+  void setFeedback(float dbPerPass) {
+    feedbackDb_.store(dbPerPass > 0 ? dbPerPass : 0.0f);
+  }
+  // Musical frame being heard: negative during a count-in, else the
+  // recording or loop position (for a beat light).
+  int64_t beatPosition() const { return beatPos_.load(); }
 
   // Status (any thread).
   State state() const { return static_cast<State>(state_.load()); }
@@ -167,6 +184,11 @@ class Looper {
   uint32_t seamTail_ = 0; // seam crossfade frames still to record
   int64_t jumpFrom_ = 0;  // old playhead, fading out after a jump to 0
   uint32_t jumpLeft_ = 0; // frames of that fade still to go
+  // Tempo sync, latched when Record is pressed (0 = free loop).
+  double loopBeat_ = 0.0;
+  int32_t loopBpb_ = 4;
+  int64_t mus_ = 0;       // musical frame of the next output frame
+  float decay_[kMaxLayers] = {};  // feedback mode: per-layer fade
 
   // Shared.
   std::atomic<float> gainTarget_[kMaxLayers];
@@ -184,6 +206,13 @@ class Looper {
   std::atomic<bool> clipped_{false};
   float inputGain_ = 1.0f;   // audio thread, smoothed
   float outputGain_ = 1.0f;  // audio thread, smoothed
+  std::atomic<double> syncBeat_{0.0};
+  std::atomic<int32_t> syncBpb_{4};
+  std::atomic<int32_t> countInBeats_{4};
+  std::atomic<bool> click_{false};
+  std::atomic<float> feedbackDb_{0.0f};
+  std::atomic<int64_t> beatPos_{0};
+  std::atomic<float> decayOut_[kMaxLayers];  // decay_, for bounce
   std::atomic<bool> enabled_{false};
   std::atomic<int32_t> inProcess_{0};
   std::atomic<bool> stopService_{false};

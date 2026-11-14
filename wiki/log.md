@@ -284,3 +284,29 @@
 - notes: Human: the needle was still clunky. Fades are now corner handles at the start/end of the take or selection (one curve
   across clips via per-clip ramps; split only at a selection's edge). Needle mode and the Fade in/out tool entries removed.
   98 core + 63 app tests pass. Installed on iPhone.
+
+## [2026-11-14] decision | M5b scope: tempo everywhere
+- pages touched: [[d017-tempo-everywhere]], [[beat-grid]], [[loop-pedal]]
+- notes: Human: tempo sync "should be a feature in everything", count-in click then visual beat, footswitch to the backlog.
+  M7 committed (9a18b4f) after the human approved the fade handles.
+
+## [2026-11-14] build | M5b: tempo everywhere (count-in, grids, synced loops, feedback)
+- pages touched: [[beat-grid]], [[loop-pedal]], [[record]], [[tempo]], [[layers]], [[edit-model]], [[audio-engine]], [[storage]], [[overview]], [[index]]
+- notes: Engine metronome (count-in with recorder hold, follow-playback click), looper sync (exact bars, musical-time
+  playback) and feedback. App: shared tempo sheet + beat light, Record with tempo, editor grid/snap/click/BPM target,
+  stack grid/snap/click, looper sync UI. 106 core + 72 app tests. Installed on iPhone; awaiting the human's check.
+
+## [2026-11-14] build | M7 DAW check passed
+- pages touched: [[sampling-tools]], [[overview]]
+- notes: Human AirDropped an exported slice to a Mac and opened it in FL Studio: works. M7's DAW criterion ticked.
+
+## [2026-11-14] build | Tempo detection
+- pages touched: [[beat-grid]], [[tempo-detection]], [[audio-engine]], [[index]]
+- notes: Human asked to detect the tempo of music samples. Native detector (spectral-flux onsets, autocorrelation with a
+  120 BPM prior, sub-2 kHz half-time check, kick-band downbeat), `ps_detect_tempo`; Detect + ½×/2× in the editor's Beat
+  grid sheet (selection or whole take). 124 core + 73 app tests. Installed on iPhone; real samples are the human's check.
+
+## [2026-11-14] build | App declared done; README rewritten
+- pages touched: [[overview]], [[beat-grid]]
+- notes: Human: "i think the app is done". README rewritten for users: overview, features, how to use each screen,
+  install on iPhone (Xcode signing, free Apple ID 7-day limit) and Android (CI debug APK, untested). M8/M9 not started.

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <vector>
 
+#include "metronome.h"
 #include "wav_writer.h"
 
 namespace ps {
@@ -43,6 +44,7 @@ constexpr float kHalfPi = 1.57079632679f;
 
 Looper::Looper() {
   for (auto& g : gainTarget_) g.store(1.0f);
+  for (auto& d : decayOut_) d.store(1.0f);
 }
 
 Looper::~Looper() { disable(); }
@@ -70,6 +72,11 @@ void Looper::enable() {
   for (auto& g : gainTarget_) g.store(1.0f);
   std::fill(std::begin(layerGain_), std::end(layerGain_), 0.0f);
   std::fill(std::begin(deleting_), std::end(deleting_), false);
+  std::fill(std::begin(decay_), std::end(decay_), 1.0f);
+  for (auto& d : decayOut_) d.store(1.0f);
+  loopBeat_ = 0.0;
+  mus_ = 0;
+  beatPos_.store(0);
   stopService_.store(false);
   service_ = std::thread(&Looper::serviceLoop, this);
   enabled_.store(true);
@@ -112,6 +119,7 @@ void Looper::removeLayer(int32_t i) {
     layerBuf_[k] = layerBuf_[k + 1];
     layerGain_[k] = layerGain_[k + 1];
     deleting_[k] = deleting_[k + 1];
+    decay_[k] = decay_[k + 1];
     gainTarget_[k].store(gainTarget_[k + 1].load());
   }
   --stack_;
@@ -150,6 +158,7 @@ void Looper::finishLayer() {
   if (stack_ < kMaxLayers) {
     layerBuf_[stack_] = cur_;
     layerGain_[stack_] = 0.0f;  // ramps in
+    decay_[stack_] = 1.0f;      // a new layer starts at full level
     ++stack_;
     active_ = stack_;
   } else {
@@ -169,12 +178,34 @@ void Looper::handle(Cmd c, int32_t arg) {
     case kPress:
       if (s == kIdle) {
         recPos_ = 0;
-        state_.store(kRecording);
+        loopBeat_ = syncBeat_.load();
+        loopBpb_ = syncBpb_.load();
+        if (loopBeat_ > 0) {
+          // Count in; recording starts when the performed downbeat (one
+          // round trip after the heard one) reaches the mic.
+          mus_ = -std::llround(countInBeats_.load() * loopBeat_);
+          state_.store(kCountIn);
+        } else {
+          state_.store(kRecording);
+        }
+      } else if (s == kCountIn) {
+        state_.store(kIdle);  // cancel the count-in
       } else if (s == kRecording) {
-        // Close: loop length = what was played; record a 10 ms tail for
-        // the seam crossfade, then start playing.
-        len_ = std::max<int64_t>(recPos_, kSeamFrames * 2);
-        seamLeft_ = kSeamFrames;
+        if (loopBeat_ > 0) {
+          // Nearest whole number of bars (at least one), from where the
+          // performer is (the heard musical position).
+          const double bar = loopBeat_ * loopBpb_;
+          const int64_t maxBars = std::max<int64_t>(
+              1, static_cast<int64_t>(kMaxLoopFrames / bar));
+          const int64_t bars = std::clamp<int64_t>(
+              std::llround(static_cast<double>(mus_) / bar), 1, maxBars);
+          len_ = std::llround(bars * bar);
+        } else {
+          // Free: loop length = what was played.
+          len_ = std::max<int64_t>(recPos_, kSeamFrames * 2);
+        }
+        // Record on to the loop end plus a 10 ms tail for the seam
+        // crossfade, then start playing.
         state_.store(kClosing);
       } else if (s == kPlaying || s == kStopped) {
         // Restart the loop from the top now, so the layer starts with the
@@ -202,6 +233,7 @@ void Looper::handle(Cmd c, int32_t arg) {
       if (s == kPlaying || s == kArmed || s == kOverdubbing) {
         state_.store(kStopped);
       }
+      if (s == kCountIn) state_.store(kIdle);
       if (s == kRecording) {  // stop while recording = close, then stop
         handle(kPress);
       }
@@ -224,6 +256,7 @@ void Looper::handle(Cmd c, int32_t arg) {
       }
       layerBuf_[0] = nullptr;
       std::fill(std::begin(deleting_), std::end(deleting_), false);
+      std::fill(std::begin(decay_), std::end(decay_), 1.0f);
       stack_ = active_ = 0;
       len_ = pos_ = recPos_ = 0;
       loopLen_.store(0);
@@ -256,6 +289,14 @@ void Looper::process(const float* in, float* out, uint32_t frames,
   while (commands_.pop(c)) handle(static_cast<Cmd>(c & 0xff), c >> 8);
 
   const int64_t L = latency_.load(std::memory_order_relaxed);
+  const bool clickOn = click_.load(std::memory_order_relaxed);
+  // Feedback: per-frame factor that makes `dB` per pass.
+  const float fbDb = feedbackDb_.load(std::memory_order_relaxed);
+  const float fbStep =
+      fbDb > 0 && len_ > 0
+          ? static_cast<float>(std::pow(10.0, -fbDb / 20.0 / static_cast<double>(len_)))
+          : 1.0f;
+  int64_t beatPos = beatPos_.load(std::memory_order_relaxed);
   float outPeak = 0.0f, peak = 0.0f;
   bool clip = false;
   const float inTarget = inputGainTarget_.load(std::memory_order_relaxed);
@@ -268,7 +309,26 @@ void Looper::process(const float* in, float* out, uint32_t frames,
     const float x = in ? in[i] * inputGain_ : 0.0f;
     peak = std::max(peak, std::fabs(x));
     clip = clip || std::fabs(x) >= 1.0f;
-    const int32_t s = state_.load(std::memory_order_relaxed);
+    int32_t s = state_.load(std::memory_order_relaxed);
+    const int64_t m = mus_++;  // musical frame of this output frame
+    const bool synced = loopBeat_ > 0;
+    auto addClick = [&](double at) {
+      const float c = Metronome::click(at, loopBeat_, loopBpb_);
+      for (uint32_t ch = 0; ch < channels; ++ch) out[i * channels + ch] += c;
+    };
+
+    if (s == kCountIn) {
+      beatPos = m;
+      if (m < 0) addClick(static_cast<double>(m));
+      else if (clickOn) addClick(static_cast<double>(m));
+      if (m < L) continue;
+      recPos_ = 0;  // the performed downbeat reaches the mic
+      state_.store(kRecording);
+      s = kRecording;
+    } else if ((s == kRecording || s == kClosing) && synced) {
+      beatPos = m;
+      if (clickOn) addClick(static_cast<double>(m));
+    }
 
     if (s == kRecording) {
       base_[recPos_++] = x;
@@ -277,8 +337,8 @@ void Looper::process(const float* in, float* out, uint32_t frames,
       continue;
     }
     if (s == kClosing) {
-      base_[recPos_++] = x;
-      if (--seamLeft_ == 0) {
+      if (recPos_ < len_ + kSeamFrames) base_[recPos_++] = x;
+      if (recPos_ >= len_ + kSeamFrames) {
         // Equal-power crossfade of the tail (recorded after "close") into
         // the head, so the loop restart is seamless.
         for (uint32_t k = 0; k < kSeamFrames; ++k) {
@@ -292,9 +352,12 @@ void Looper::process(const float* in, float* out, uint32_t frames,
         while (ready_.pop(stale)) retired_.push(stale.data);
         layerBuf_[0] = base_.get();
         layerGain_[0] = 1.0f;
+        std::fill(std::begin(decay_), std::end(decay_), 1.0f);
         jumpLeft_ = 0;  // nothing from an earlier loop may fade in
         stack_ = active_ = 1;
-        pos_ = 0;
+        // A synced loop carries on in musical time: the next frame plays
+        // where the performer is. A free loop starts from the top.
+        pos_ = synced ? ((mus_ % len_) + len_) % len_ : 0;
         loopLen_.store(len_);
         state_.store(kPlaying);
       }
@@ -311,9 +374,15 @@ void Looper::process(const float* in, float* out, uint32_t frames,
       float& g = layerGain_[k];
       if (g < target) g = std::min(target, g + kGainStep);
       else if (g > target) g = std::max(target, g - kGainStep);
-      if (g != 0.0f) {
-        y += layerBuf_[k][pos_] * g;
-        if (jumpLeft_ > 0) yOld += layerBuf_[k][jumpFrom_] * g;
+      float& d = decay_[k];
+      if (fbStep < 1.0f) {
+        d *= fbStep;
+        if (d < 1e-4f) d = 0.0f;  // −80 dB: gone (no denormals)
+      }
+      const float gd = g * d;
+      if (gd != 0.0f) {
+        y += layerBuf_[k][pos_] * gd;
+        if (jumpLeft_ > 0) yOld += layerBuf_[k][jumpFrom_] * gd;
       }
     }
     if (jumpLeft_ > 0) {
@@ -326,6 +395,10 @@ void Looper::process(const float* in, float* out, uint32_t frames,
     const float heard = softLimit(y * outputGain_);
     for (uint32_t ch = 0; ch < channels; ++ch) out[i * channels + ch] += heard;
     outPeak = std::max(outPeak, std::fabs(heard));
+    if (synced) {
+      beatPos = pos_;
+      if (clickOn) addClick(static_cast<double>(pos_));
+    }
 
     // Overdub: write where the performer heard it (one round trip ago).
     if ((s == kArmed || s == kOverdubbing) && cur_) {
@@ -373,6 +446,10 @@ void Looper::process(const float* in, float* out, uint32_t frames,
   while (outPeak > prevOut &&
          !outputPeak_.compare_exchange_weak(prevOut, outPeak)) {
   }
+  beatPos_.store(beatPos, std::memory_order_relaxed);
+  for (int32_t k = 0; k < stack_; ++k) {
+    decayOut_[k].store(decay_[k], std::memory_order_relaxed);
+  }
   const int32_t st = state_.load(std::memory_order_relaxed);
   if (st == kPlaying || st == kOverdubbing) {
     position_.store(pos_, std::memory_order_relaxed);
@@ -413,7 +490,7 @@ bool Looper::bounce(const char* path, int32_t passes) {
   std::vector<float> mix(static_cast<size_t>(len), 0.0f);
   for (int32_t k = 0; k < n; ++k) {
     const float* b = layerBuf_[k];
-    const float g = gainTarget_[k].load();
+    const float g = gainTarget_[k].load() * decayOut_[k].load();
     if (!b || g == 0.0f) continue;
     for (int64_t i = 0; i < len; ++i) mix[static_cast<size_t>(i)] += b[i] * g;
   }

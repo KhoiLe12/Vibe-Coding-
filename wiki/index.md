@@ -13,6 +13,7 @@
 - [[export]] — render edits to a WAV/M4A file and share
 - [[loop-pedal]] — record a loop, overdub layers in sync, mute/undo layers, bounce to the editor
 - [[layers]] — stack takes into a multitrack: record on top, add takes, slide, mix (M6, done)
+- [[beat-grid]] — tempo everywhere: BPM/tap/signature, count-in recording, grid + snap + click in editor and stacks, synced loops (M5b, built)
 - [[sampling-tools]] — varispeed, reverse, normalize, fades, trim silence, one-shot/loop/slice export (M7, built)
 
 ## Concepts
@@ -23,6 +24,7 @@
 - [[audio-latency]] — buffer sizes, round-trip latency on mobile
 - [[waveform-rendering]] — peak caches for fast zoom
 - [[latency-compensation]] — measuring round-trip latency and aligning overdubs
+- [[tempo-detection]] — finding a sample's BPM and downbeat: onset envelopes, autocorrelation with a 120 BPM preference, half-time check, kick-based downbeat
 - [[varispeed]] — tape-style pitch + speed change by resampling
 - [[recording-diverse-material]] — voice, instruments, noise: gain staging, transients, formants
 
@@ -41,6 +43,7 @@
 - [[d005-loop-engine]] — accepted: loop pedal runs fully in the C++ real-time engine
 - [[d006-native-build]] — accepted: `package_ffi` build hook, vendored miniaudio, Apple ObjC++ + no runtime linking
 - [[d007-recording-format]] — accepted: mono, 48 kHz, 32-bit float WAV; pre-roll after M1
+- [[d017-tempo-everywhere]] — accepted: tempo sync in everything (human), count-in click then visual beat, no footswitch; grid on edits, exact-bar loops, feedback mode
 - [[d016-sampling-tools]] — accepted: M7 tools on clips (reverse, fades, gain), split points = slices, share sheet now, varispeed ±24 st by resampling, seamless loop export
 - [[d015-layers]] — accepted: Layers (multitrack) is M6; later milestones shift by one; loop pedal kept
 - [[d014-looper-m5a]] — accepted: speaker monitoring for now, M5 split into M5a/M5b, looper engine design

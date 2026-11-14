@@ -134,6 +134,24 @@ PS_EXPORT int32_t ps_recorder_begin(const char* wav_path, int32_t sample_rate);
 // peaks_path is NULL/empty, writes the peaks file. Blocks briefly.
 // Returns PS_OK, PS_ERROR_NOT_RECORDING or PS_ERROR_FILE.
 PS_EXPORT int32_t ps_recorder_end(const char* peaks_path);
+// Count-in (M5b): begins a take that writes nothing until the metronome
+// (set with ps_metronome_set_grid) has clicked count_in_frames; recording
+// then starts on that exact frame. click_after: keep clicking while
+// recording (for headphones).
+PS_EXPORT int32_t ps_recorder_begin_counted(const char* wav_path,
+                                            int32_t sample_rate,
+                                            int64_t count_in_frames,
+                                            int32_t click_after);
+// Metronome grid: beat length in frames (0 = off) and beats per bar.
+PS_EXPORT void ps_metronome_set_grid(double beat_frames, int32_t beats_per_bar);
+// Click with playback; musical time = player position − downbeat.
+PS_EXPORT void ps_metronome_follow(int32_t on, double downbeat);
+// Musical frame of the count-in/recording clock (negative while counting
+// in); INT64_MIN when not counting.
+PS_EXPORT int64_t ps_metronome_musical(void);
+// The click's sample at musical frame `frame` (tests, drawing).
+PS_EXPORT float ps_metronome_click(double frame, double beat_frames,
+                                   int32_t beats_per_bar);
 
 // While paused, input is metered but not written; resume appends to the
 // same take.
@@ -283,6 +301,7 @@ PS_EXPORT double ps_render_progress(void);
 #define PS_LOOPER_OVERDUBBING 4
 #define PS_LOOPER_STOPPED 5
 #define PS_LOOPER_ARMED 6
+#define PS_LOOPER_COUNT_IN 7
 
 // Allocates (on) or frees (off) the looper; off also clears it.
 PS_EXPORT void ps_looper_enable(int32_t on);
@@ -326,6 +345,18 @@ PS_EXPORT int32_t ps_looper_bounce(const char* path, int32_t passes);
 PS_EXPORT void ps_looper_process_offline(const float* in, float* out,
                                          int32_t frames, int32_t channels);
 PS_EXPORT void ps_looper_service(void);
+// Tempo sync (M5b, wiki/decisions/d017-tempo-everywhere.md). beat_frames 0 =
+// free loops. With sync, Record counts in `count_in_beats` beats (clicked),
+// the loop's frame 0 is the performed downbeat (latency-compensated), and
+// closing snaps to the nearest whole number of bars.
+PS_EXPORT void ps_looper_set_sync(double beat_frames, int32_t beats_per_bar,
+                                  int32_t count_in_beats);
+// Click while recording/playing (synced loops only; for headphones).
+PS_EXPORT void ps_looper_set_click(int32_t on);
+// Feedback mode: every layer fades by this many dB per pass (0 = off).
+PS_EXPORT void ps_looper_set_feedback(float db_per_pass);
+// Musical frame being heard (negative during a count-in), for a beat light.
+PS_EXPORT int64_t ps_looper_beat_position(void);
 
 // Current output route name (calibration is per route). Valid until the next
 // call on the same thread.
@@ -390,6 +421,16 @@ PS_EXPORT int32_t ps_export_wav(const char* source_path,
 
 // Largest absolute sample in count ranges [starts[i], ends[i]) of a mono
 // float WAV (for normalize). -1 if the file can't be read.
+// Tempo detection (M5b): plays the clips like ps_export_wav (first
+// max_frames; 0 = all) and finds BPM in [min_bpm, max_bpm], the first
+// downbeat's frame and a confidence 0..1 → out[0..2]. Returns 1 if found.
+PS_EXPORT int32_t ps_detect_tempo(const char* source_path,
+                                  const int64_t* starts, const int64_t* ends,
+                                  const float* gains, const double* fades,
+                                  const uint8_t* reverse, int32_t count,
+                                  double min_bpm, double max_bpm,
+                                  int32_t beats_per_bar, int64_t max_frames,
+                                  double* out);
 PS_EXPORT double ps_peak(const char* path, const int64_t* starts,
                          const int64_t* ends, int32_t count);
 

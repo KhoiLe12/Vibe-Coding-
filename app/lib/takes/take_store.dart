@@ -20,6 +20,7 @@ import 'package:pocket_audio/pocket_audio.dart';
 import '../edit/edit_list.dart';
 import '../edit/render_cache.dart';
 import '../stack/stack.dart';
+import '../tempo/grid.dart';
 
 /// Header size of the WAVs our recorder writes (RIFF + fmt + fact + data).
 const _wavHeaderBytes = 58;
@@ -91,6 +92,7 @@ class TakeStore {
       peaksDir = Directory('${projectDir.path}/peaks'),
       editsDir = Directory('${projectDir.path}/edits'),
       stacksDir = Directory('${projectDir.path}/stacks'),
+      tempoFile = File('${projectDir.path}/tempo.json'),
       renders = RenderCache(Directory('${projectDir.path}/renders')) {
     sources.createSync(recursive: true);
     peaksDir.createSync(recursive: true);
@@ -104,6 +106,11 @@ class TakeStore {
 
   /// Stacks of layers (M6): `stacks/<id>.json`.
   final Directory stacksDir;
+
+  /// The tempo last used and count-in/click settings (M5b).
+  final File tempoFile;
+  TempoSettings get tempo => TempoSettings.load(tempoFile);
+  set tempo(TempoSettings t) => t.save(tempoFile);
 
   /// Transposed / stretched renders (disposable cache, M4).
   final RenderCache renders;
@@ -183,11 +190,12 @@ class TakeStore {
     return EditList.whole(recordingFrames);
   }
 
-  /// Saves the edit list; an unedited take keeps no file. Written to a
+  /// Saves the edit list; an unedited take without a beat grid keeps no
+  /// file. Written to a
   /// temporary file and renamed, so a crash never leaves half a file.
   void saveEdits(Take take, EditList edits) {
     final f = editsFile(take.editsId);
-    if (edits.isWhole(take.frames)) {
+    if (edits.isWhole(take.frames) && edits.grid == null) {
       if (f.existsSync()) f.deleteSync();
       return;
     }

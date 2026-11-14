@@ -12,7 +12,7 @@ Milestone M4.
 ## Behaviour
 - Speed **75%–150%** without changing pitch. *The plan said 50%–200% (raw/plan/pocket-studio-plan.md); narrowed 2026-11-14 by the human to the range Signalsmith stretches well ([[d013-transpose-tempo-design]]).*
 - Uses the same render-then-play flow and cache as [[transpose]] ([[dsp-processor]], [[time-stretching]]).
-- Tempo-synced loops from the [[loop-pedal]] store their BPM, so tempo changes can target a new BPM.
+- Tempo-synced loops from the [[loop-pedal]] store their BPM, so tempo changes can target a new BPM. *Built in M5b:* with a [[beat-grid]], the Tempo section shows "= N BPM" for what you hear and *Play at BPM…* sets the tempo for a typed BPM (within 75–150 %).
 
 ## Acceptance criteria
 *Proposed during M4 planning, approved by the human 2026-11-14.*

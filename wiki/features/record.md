@@ -1,7 +1,7 @@
 ---
 type: feature
 status: draft
-updated: 2026-11-13
+updated: 2026-11-14
 sources: [raw/plan/pocket-studio-plan.md, raw/ideas/2026-10-26-scope.md]
 tags: [m1, recording]
 ---
@@ -16,6 +16,7 @@ Capture audio from the mic with a live waveform and level meter. Milestone M1.
 - Recorded mono at 48 kHz and stored as 32-bit float WAV ([[d007-recording-format]]), so quiet noises can be boosted and loud ones don't clip on the way in.
 - Input gain control and a clip indicator.
 - The OS's voice processing (noise suppression, auto-gain, echo cancel) is **off by default**, because it destroys noise and instrument recordings ([[recording-diverse-material]]).
+- **Record with tempo** (M5b, [[beat-grid]]): an optional clicked count-in (1 or 2 bars). The take starts exactly on the downbeat and gets a beat grid. During recording, a beat light shows the beat and no click is heard (*Click while recording* turns it on, for headphones). Pause is hidden with tempo.
 - Optional pre-roll buffer keeps the last ~2 s before you hit record, so you never miss the start of a sound. *Deferred until after M1 ([[d007-recording-format]]).*
 
 ## Acceptance criteria

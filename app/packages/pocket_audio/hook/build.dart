@@ -25,6 +25,7 @@ void main(List<String> args) async {
         'src/engine.cpp',
         'src/dsp_processor.cpp',
         'src/exporter.cpp',
+        'src/tempo_detect.cpp',
         'src/latency_probe.cpp',
         'src/looper.cpp',
         'src/player.cpp',

@@ -15,6 +15,8 @@
 #include "dsp_processor.h"
 #include "latency_probe.h"
 #include "looper.h"
+#include "metronome.h"
+#include "tempo_detect.h"
 #include "platform.h"
 #include "player.h"
 #include "pocket_audio.h"
@@ -44,6 +46,7 @@ ps::Player g_player;
 ps::LatencyProbe g_probe;
 ps::DspProcessor g_dsp;
 ps::Looper g_looper;
+ps::Metronome g_metronome;
 // Mic mode for the next start with input (iOS): raw = measurement mode.
 std::atomic<bool> g_rawInput{true};
 // Requested period (I/O buffer) size in frames; 0 = miniaudio's default.
@@ -54,13 +57,20 @@ std::mutex g_controlMutex;
 // Everything one audio callback does; also run offline by tests.
 void processAll(const float* input, float* output, ma_uint32 frameCount,
                 ma_uint32 channels, ma_uint32 sampleRate) {
+  // A count-in starts here: the metronome counts from this callback's first
+  // frame and the recorder starts writing exactly where the count ends.
+  const int64_t countIn = g_metronome.takeCountIn();
+  if (countIn >= 0) g_recorder.release(countIn);
+  const int64_t playerPos = g_player.position();
+  const bool playerRolling = g_player.playing() && !g_player.scrubbing();
   if (input != nullptr) {
     // The player position before this callback renders = the timeline
     // position of this callback's first output frame (layer alignment).
-    g_recorder.process(input, frameCount, g_player.position());
+    g_recorder.process(input, frameCount, playerPos);
   }
   g_engine.tone.render(output, frameCount, channels, sampleRate);
   g_player.render(output, frameCount, channels);
+  g_metronome.render(output, frameCount, channels, playerRolling, playerPos);
   g_looper.process(input, output, frameCount, channels);
   g_probe.process(input, output, frameCount, channels);
 }
@@ -262,8 +272,34 @@ int32_t ps_recorder_begin(const char* wav_path, int32_t sample_rate) {
   return g_recorder.begin(wav_path, static_cast<uint32_t>(sample_rate));
 }
 
+int32_t ps_recorder_begin_counted(const char* wav_path, int32_t sample_rate,
+                                  int64_t count_in_frames,
+                                  int32_t click_after) {
+  if (!wav_path || sample_rate <= 0) return PS_ERROR_FILE;
+  const int32_t r =
+      g_recorder.begin(wav_path, static_cast<uint32_t>(sample_rate), true);
+  if (r == PS_OK) g_metronome.requestCountIn(count_in_frames, click_after != 0);
+  return r;
+}
+
 int32_t ps_recorder_end(const char* peaks_path) {
+  g_metronome.stopCounting();
   return g_recorder.end(peaks_path);
+}
+
+void ps_metronome_set_grid(double beat_frames, int32_t beats_per_bar) {
+  g_metronome.setGrid(beat_frames, beats_per_bar);
+}
+
+void ps_metronome_follow(int32_t on, double downbeat) {
+  g_metronome.setFollow(on != 0, downbeat);
+}
+
+int64_t ps_metronome_musical(void) { return g_metronome.musical(); }
+
+float ps_metronome_click(double frame, double beat_frames,
+                         int32_t beats_per_bar) {
+  return ps::Metronome::click(frame, beat_frames, beats_per_bar);
 }
 
 void ps_recorder_set_paused(int32_t paused) {
@@ -479,6 +515,37 @@ int32_t ps_export_wav(const char* source_path, const int64_t* starts,
   return ps::exportWav(job) ? PS_OK : PS_ERROR_FILE;
 }
 
+int32_t ps_detect_tempo(const char* source_path, const int64_t* starts,
+                        const int64_t* ends, const float* gains,
+                        const double* fades, const uint8_t* reverse,
+                        int32_t count, double min_bpm, double max_bpm,
+                        int32_t beats_per_bar, int64_t max_frames,
+                        double* out) {
+  if (!source_path || !out || count < 0 ||
+      (count > 0 && (!starts || !ends))) {
+    return 0;
+  }
+  auto src = ps::MappedWav::open(source_path);
+  if (!src) return 0;
+  const auto specs =
+      ps::Player::specsFrom(starts, ends, gains, fades, reverse, count);
+  const ps::Track tr = ps::Player::buildTrack(
+      src, specs.data(), static_cast<int32_t>(specs.size()));
+  const int64_t n =
+      max_frames > 0 ? std::min(tr.length, max_frames) : tr.length;
+  if (n <= 0) return 0;
+  std::vector<float> mono(static_cast<size_t>(n));
+  for (int64_t i = 0; i < n; ++i) {
+    mono[static_cast<size_t>(i)] = ps::Player::trackAt(tr, i);
+  }
+  const ps::TempoResult r =
+      ps::detectTempo(mono.data(), n, min_bpm, max_bpm, beats_per_bar);
+  out[0] = r.bpm;
+  out[1] = r.firstBeat;
+  out[2] = r.confidence;
+  return r.bpm > 0 ? 1 : 0;
+}
+
 double ps_peak(const char* path, const int64_t* starts, const int64_t* ends,
                int32_t count) {
   if (!path || count < 0 || (count > 0 && (!starts || !ends))) return -1.0;
@@ -528,6 +595,15 @@ void ps_looper_process_offline(const float* in, float* out, int32_t frames,
                    static_cast<uint32_t>(channels));
 }
 void ps_looper_service(void) { g_looper.serviceOnce(); }
+void ps_looper_set_sync(double beat_frames, int32_t beats_per_bar,
+                        int32_t count_in_beats) {
+  g_looper.setSync(beat_frames, beats_per_bar, count_in_beats);
+}
+void ps_looper_set_click(int32_t on) { g_looper.setClick(on != 0); }
+void ps_looper_set_feedback(float db_per_pass) {
+  g_looper.setFeedback(db_per_pass);
+}
+int64_t ps_looper_beat_position(void) { return g_looper.beatPosition(); }
 
 const char* ps_output_route(void) { return ps::platform::outputRoute(); }
 

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Record screen (wiki/features/record.md): live waveform, level meter with
-// clip light, input gain, record / pause / stop. Audio never passes through
+// clip light, input gain, record / pause / stop. With tempo (M5b, d017): a
+// clicked count-in, a beat light, and the take gets a beat grid. Audio never passes through
 // Dart: the C++ recorder writes the file; this screen only polls for display.
 
 import 'dart:async';
@@ -13,7 +14,11 @@ import 'package:flutter/material.dart';
 import 'package:pocket_audio/pocket_audio.dart';
 
 import '../audio/audio_control.dart';
+import '../audio/calibration.dart';
+import '../edit/edit_list.dart';
 import '../takes/take_store.dart';
+import '../tempo/grid.dart';
+import '../widgets/tempo_controls.dart';
 import '../widgets/waveform.dart';
 import 'take_screen.dart';
 
@@ -45,6 +50,10 @@ class _RecordScreenState extends State<RecordScreen> {
   int _peakBlocks = 0;
   int _revision = 0;
   int _interruptionsAtStart = 0;
+  // Tempo (M5b): settings, and the grid of the take being recorded.
+  late TempoSettings _tempo = widget.store.tempo;
+  Grid? _takeGrid;
+
   // Set once the take screen owns the engine; dispose() then leaves it alone
   // (the old route is disposed after the new one has started).
   bool _handedOff = false;
@@ -152,10 +161,58 @@ class _RecordScreenState extends State<RecordScreen> {
     _revision++;
   }
 
+  Future<void> _editTempo() async {
+    final c = await showTempoSheet(
+      context,
+      initial: _tempo.grid(),
+      title: 'Record with tempo',
+      subtitle:
+          'The count-in clicks; while recording the beat is shown, so the '
+          'click isn\'t recorded.',
+      countIn: true,
+      countInBars: _tempo.countInBars,
+      click: true,
+      clickWhileRecording: _tempo.clickWhileRecording,
+      removable: _tempo.recordWithTempo,
+    );
+    if (c == null || !mounted) return;
+    setState(() {
+      _tempo = c.grid == null
+          ? _tempo.copyWith(recordWithTempo: false)
+          : _tempo
+                .withGrid(c.grid!)
+                .copyWith(
+                  countInBars: c.countInBars,
+                  clickWhileRecording: c.clickWhileRecording,
+                  recordWithTempo: true,
+                );
+    });
+    widget.store.tempo = _tempo;
+  }
+
   Future<void> _record() async {
     final take = widget.store.newTake();
     try {
-      PocketAudio.beginRecording(take.wav, sampleRate: sampleRate);
+      if (_tempo.recordWithTempo) {
+        // The take starts on the downbeat after the count-in; the performed
+        // downbeat reaches the mic one round trip later.
+        final g = _tempo.grid();
+        Metronome.setGrid(g.beatFrames, g.beatsPerBar);
+        final roundTrip = roundTripEstimate(
+          Calibration(widget.store.calibrationFile),
+          PocketAudio.outputRoute,
+        );
+        _takeGrid = g.copyWith(downbeat: roundTrip.toDouble());
+        PocketAudio.beginRecordingCounted(
+          take.wav,
+          countInFrames: (_tempo.countInBeats * g.beatFrames).round(),
+          clickAfter: _tempo.clickWhileRecording,
+          sampleRate: sampleRate,
+        );
+      } else {
+        _takeGrid = null;
+        PocketAudio.beginRecording(take.wav, sampleRate: sampleRate);
+      }
     } on PocketAudioException catch (e) {
       setState(() => _error = 'Could not start recording (${e.message}).');
       return;
@@ -198,6 +255,11 @@ class _RecordScreenState extends State<RecordScreen> {
       _open();
       return;
     }
+    final grid = _takeGrid;
+    if (grid != null) {
+      final t = saved.first;
+      widget.store.saveEdits(t, EditList.whole(t.frames).withGrid(grid));
+    }
     _handedOff = true;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
@@ -225,6 +287,9 @@ class _RecordScreenState extends State<RecordScreen> {
     final windowBlocks =
         _windowSeconds * sampleRate ~/ PocketAudio.peakBlockFrames;
     final first = math.max(0, _peakBlocks - windowBlocks);
+    // Tempo: the beat heard (negative while counting in).
+    final musical = recording && _takeGrid != null ? Metronome.musical : null;
+    final countingIn = musical != null && musical < 0;
 
     return PopScope(
       canPop: !recording && _phase != _Phase.saving,
@@ -270,7 +335,9 @@ class _RecordScreenState extends State<RecordScreen> {
                         ),
                       ),
                       Text(
-                        paused
+                        countingIn
+                            ? 'Count-in…'
+                            : paused
                             ? 'Paused — resume to continue the same take'
                             : recording
                             ? 'Recording'
@@ -280,7 +347,41 @@ class _RecordScreenState extends State<RecordScreen> {
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodyMedium,
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 8),
+                      Center(
+                        child: recording
+                            ? (_takeGrid == null
+                                  ? const SizedBox(height: 48)
+                                  : SizedBox(
+                                      height: 48,
+                                      child: BeatLight(
+                                        key: const Key('record-beat'),
+                                        beat: musical == null
+                                            ? null
+                                            : musical / _takeGrid!.beatFrames,
+                                        beatsPerBar: _takeGrid!.beatsPerBar,
+                                        countingIn: countingIn,
+                                      ),
+                                    ))
+                            : SizedBox(
+                                height: 48,
+                                child: FilterChip(
+                                  key: const Key('record-tempo'),
+                                  avatar: const Icon(Icons.speed, size: 18),
+                                  label: Text(
+                                    _tempo.recordWithTempo
+                                        ? '${_tempo.grid().label}'
+                                              '${_tempo.countInBars > 0 ? ' · ${_tempo.countInBars} bar count-in' : ''}'
+                                        : 'No tempo',
+                                  ),
+                                  selected: _tempo.recordWithTempo,
+                                  onSelected: _phase == _Phase.ready
+                                      ? (_) => _editTempo()
+                                      : null,
+                                ),
+                              ),
+                      ),
+                      const SizedBox(height: 8),
                       Expanded(
                         child: DecoratedBox(
                           decoration: BoxDecoration(
@@ -361,7 +462,9 @@ class _RecordScreenState extends State<RecordScreen> {
                         children: [
                           SizedBox.square(
                             dimension: 64,
-                            child: recording
+                            // Pausing would shift the beat grid: no pause
+                            // with tempo.
+                            child: recording && _takeGrid == null
                                 ? IconButton.filledTonal(
                                     key: const Key('pause'),
                                     tooltip: paused ? 'Resume' : 'Pause',
