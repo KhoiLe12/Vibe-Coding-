@@ -50,22 +50,25 @@ std::atomic<int32_t> g_periodFrames{0};
 // Guards start/stop/restart. Never taken on the audio thread.
 std::mutex g_controlMutex;
 
+// Everything one audio callback does; also run offline by tests.
+void processAll(const float* input, float* output, ma_uint32 frameCount,
+                ma_uint32 channels, ma_uint32 sampleRate) {
+  if (input != nullptr) {
+    // The player position before this callback renders = the timeline
+    // position of this callback's first output frame (layer alignment).
+    g_recorder.process(input, frameCount, g_player.position());
+  }
+  g_engine.tone.render(output, frameCount, channels, sampleRate);
+  g_player.render(output, frameCount, channels);
+  g_looper.process(input, output, frameCount, channels);
+  g_probe.process(input, output, frameCount, channels);
+}
+
 void dataCallback(ma_device* device, void* output, const void* input,
                   ma_uint32 frameCount) {
   auto* engine = static_cast<Engine*>(device->pUserData);
-  if (input != nullptr) {
-    g_recorder.process(static_cast<const float*>(input), frameCount);
-  }
-  engine->tone.render(static_cast<float*>(output), frameCount,
-                      device->playback.channels, device->sampleRate);
-  g_player.render(static_cast<float*>(output), frameCount,
-                  device->playback.channels);
-  g_looper.process(static_cast<const float*>(input),
-                   static_cast<float*>(output), frameCount,
-                   device->playback.channels);
-  g_probe.process(static_cast<const float*>(input),
-                  static_cast<float*>(output), frameCount,
-                  device->playback.channels);
+  processAll(static_cast<const float*>(input), static_cast<float*>(output),
+             frameCount, device->playback.channels, device->sampleRate);
   engine->callbacks.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -469,5 +472,38 @@ void ps_looper_process_offline(const float* in, float* out, int32_t frames,
 void ps_looper_service(void) { g_looper.serviceOnce(); }
 
 const char* ps_output_route(void) { return ps::platform::outputRoute(); }
+
+// ---- Layers (M6) ----
+
+void ps_player_open_stack(void) { g_player.openStack(); }
+
+int64_t ps_player_set_stack(int32_t count, const char* const* paths,
+                            const int64_t* offsets, const int32_t* clip_counts,
+                            const int64_t* starts, const int64_t* ends,
+                            const float* gains) {
+  if (count < 0 || (count > 0 && (!paths || !offsets || !clip_counts))) {
+    return -1;
+  }
+  return g_player.setStack(count, paths, offsets, clip_counts, starts, ends,
+                           gains);
+}
+
+void ps_player_set_track_gain(int32_t track, float gain) {
+  g_player.setTrackGain(track, gain);
+}
+
+int32_t ps_player_bounce(const char* path) {
+  return path && g_player.bounce(path) ? PS_OK : PS_ERROR_FILE;
+}
+
+int64_t ps_recorder_start_stamp(void) { return g_recorder.startStamp(); }
+
+void ps_engine_process_offline(const float* input, float* output,
+                               int32_t frames, int32_t channels) {
+  if (!output || frames <= 0 || channels <= 0) return;
+  std::fill(output, output + static_cast<size_t>(frames) * channels, 0.0f);
+  processAll(input, output, static_cast<ma_uint32>(frames),
+             static_cast<ma_uint32>(channels), kSampleRate);
+}
 
 }  // extern "C"

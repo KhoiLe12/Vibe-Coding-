@@ -427,6 +427,105 @@ abstract final class PocketAudio {
   /// Current output route name, e.g. "Speaker" (calibration is per route).
   static String get outputRoute =>
       bindings.ps_output_route().cast<Utf8>().toDartString();
+
+  // ---- Layers (M6) ----
+
+  /// Opens an empty stack in the player (closes any take).
+  static void openStack() => bindings.ps_player_open_stack();
+
+  /// Sets the stack's layers: each plays [StackTrack.clips] of
+  /// [StackTrack.path] from [StackTrack.offset]. Returns the stack length.
+  static int setStack(List<StackTrack> tracks) {
+    final n = tracks.length;
+    final clipTotal = tracks.fold<int>(0, (s, t) => s + t.clips.length);
+    final paths = calloc<ffi.Pointer<ffi.Char>>(math.max(1, n));
+    final offsets = calloc<ffi.Int64>(math.max(1, n));
+    final counts = calloc<ffi.Int32>(math.max(1, n));
+    final starts = calloc<ffi.Int64>(math.max(1, clipTotal));
+    final ends = calloc<ffi.Int64>(math.max(1, clipTotal));
+    final gains = calloc<ffi.Float>(math.max(1, clipTotal));
+    try {
+      var at = 0;
+      for (var k = 0; k < n; k++) {
+        paths[k] = tracks[k].path.toNativeUtf8().cast();
+        offsets[k] = tracks[k].offset;
+        counts[k] = tracks[k].clips.length;
+        for (final c in tracks[k].clips) {
+          starts[at] = c.start;
+          ends[at] = c.end;
+          gains[at] = c.gain;
+          at++;
+        }
+      }
+      final len = bindings.ps_player_set_stack(
+        n,
+        paths.cast(),
+        offsets,
+        counts,
+        starts,
+        ends,
+        gains,
+      );
+      if (len < 0) {
+        throw PocketAudioException(len, 'could not open a layer for playback');
+      }
+      return len;
+    } finally {
+      for (var k = 0; k < n; k++) {
+        calloc.free(paths[k]);
+      }
+      calloc.free(paths);
+      calloc.free(offsets);
+      calloc.free(counts);
+      calloc.free(starts);
+      calloc.free(ends);
+      calloc.free(gains);
+    }
+  }
+
+  /// Volume of layer [track] (mute/solo/volume); smoothed over 5 ms.
+  static void setTrackGain(int track, double gain) =>
+      bindings.ps_player_set_track_gain(track, gain);
+
+  /// Mixes the open stack at the current volumes into a mono float WAV.
+  static void bounceMix(String path) {
+    final p = path.toNativeUtf8();
+    try {
+      if (bindings.ps_player_bounce(p.cast()) != bindings.PS_OK) {
+        throw PocketAudioException(bindings.PS_ERROR_FILE, 'bounce failed');
+      }
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Player position when the current take's first frame was recorded
+  /// (-2 = not yet); lines up a layer recorded over a stack.
+  static int get recorderStartStamp => bindings.ps_recorder_start_stamp();
+
+  /// Tests: one full audio callback (recorder, player, looper, probe) on
+  /// mono [input], without a device. Returns the mono output.
+  static Float32List processEngineOffline(Float32List input) {
+    final n = input.length;
+    final i = calloc<ffi.Float>(n), o = calloc<ffi.Float>(n);
+    try {
+      i.asTypedList(n).setAll(0, input);
+      bindings.ps_engine_process_offline(i, o, n, 1);
+      return Float32List.fromList(o.asTypedList(n));
+    } finally {
+      calloc.free(i);
+      calloc.free(o);
+    }
+  }
+}
+
+/// One layer of a stack: clips (in [path]'s frames) placed at [offset].
+class StackTrack {
+  const StackTrack(this.path, this.offset, this.clips);
+
+  final String path;
+  final int offset;
+  final List<({int start, int end, double gain})> clips;
 }
 
 /// State of the latest render (matches PS_RENDER_*).

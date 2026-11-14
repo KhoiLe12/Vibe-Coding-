@@ -208,3 +208,50 @@
 - pages touched: [[loop-pedal]], [[overview]]
 - notes: Human verified restart, timing, bounce, 10 layers, undo. Added per-layer delete (fade then remove, first take mute-only).
   72 core + 24 app tests. Mid-range 20-layer check stays open.
+
+## [2026-11-14] build | M6 Layers built
+- pages touched: [[layers]], [[audio-engine]], [[storage]], [[edit-model]]
+- notes: Multi-track player (tracks + offsets + smoothed volumes + edge fades), stack bounce, recorder start stamp, offline full
+  callback; LayerStack model + History<T>; stack screen; home lists stacks. 78 core + 29 app tests. Installed on iPhone.
+
+## [2026-11-14] build | Layers: bounce fix, stable lanes, snapping, edit a layer's take
+- pages touched: [[layers]]
+- notes: Human: lining up was hard (waveforms shifted on drop), bounce failed (unsendable closure). Fixed both; added snapping + 1 s
+  grid and per-layer editing via the take editor. Stack-wide editing awaits the human's answer.
+
+## [2026-11-14] build | Layers: edit the whole stack; bounce from the editor
+- pages touched: [[layers]]
+- notes: Human wants stack-wide edits. The arrangement is mixed into a hashed cache file and opened in the take editor; stack edits
+  are keyed by stack id and clamped to shorter mixes. Editor gained Bounce. 31 app tests pass. Installed on iPhone.
+
+## [2026-11-14] build | Layers: snap the sound start; grid over the lanes
+- pages touched: [[layers]]
+- notes: Human needed to line up where the sound starts, and couldn't see the grid. Added a sound-start marker that snaps (preferred
+  over the file start) and drew the grid on top. 32 app tests. Installed on iPhone.
+
+## [2026-11-14] build | Layers: snap toggle
+- pages touched: [[layers]]
+- notes: Human asked to be able to turn magnetic snapping off; grid icon in the stack screen's top bar.
+
+## [2026-11-14] build | Layers: no automatic re-alignment to 0:00
+- pages touched: [[layers]], [[d015-layers]]
+- notes: Human found the earliest-layer-to-0 rule annoying and wants leading silence. Offsets now stay as placed (clamped at 0).
+
+## [2026-11-14] build | Audio start retried on play and resume
+- pages touched: [[layers]]
+- notes: Human: stack sometimes silent when opened right after launch. Likely iOS refusing session activation during launch; play
+  and app-resume now ensure the engine runs (one retry), with a message on failure. Not reproduced on the Mac.
+
+## [2026-11-14] build | Stalled audio after app switching: liveness check + restart
+- pages touched: [[layers]], [[audio-engine]]
+- notes: Human: silent after tabbing to another app and back, no message. iOS interruption without an "ended" notice left the engine
+  flagged running but stopped. Play/resume now verify callbacks advance and restart the engine if not.
+
+## [2026-11-14] build | Layers: stalled-audio fix confirmed; lining up confirmed
+- pages touched: [[layers]]
+- notes: Human confirmed audio after app switching and that lining up feels great. Open checks: recorded-layer timing, undo, 8 layers,
+  bounce after the fix, per-layer and whole-stack editing.
+
+## [2026-11-14] build | M6 Layers verified on iOS (bounce check pending)
+- pages touched: [[layers]], [[overview]]
+- notes: Human: recorded-layer alignment, undo, 8 layers, per-layer and whole-stack editing all work. Bounce not yet confirmed on device.

@@ -53,6 +53,36 @@ abstract final class AudioControl {
 
   static void release() => PocketAudio.stop();
 
+  /// Makes sure playback audio is really flowing, e.g. when play is
+  /// pressed or the app comes back. "Running" is not enough: when another
+  /// app interrupts our audio, iOS stops it and does not always say when the
+  /// interruption is over, so the engine looked running but was silent
+  /// (human, 2026-11-14). The audio thread counts its callbacks; if the count
+  /// doesn't move within ~80 ms, the engine is restarted (twice at most).
+  /// Returns whether audio is flowing.
+  static Future<bool> ensureOutput() async {
+    if (PocketAudio.isRunning && !PocketAudio.hasInput && await _flowing()) {
+      return true;
+    }
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        PocketAudio.stop(); // force a fresh start: useOutput() would skip it
+        useOutput();
+        if (await _flowing()) return true;
+      } on PocketAudioException {
+        // iOS refused (e.g. still launching): try again shortly.
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    return false;
+  }
+
+  static Future<bool> _flowing() async {
+    final before = PocketAudio.callbackCount;
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    return PocketAudio.callbackCount != before;
+  }
+
   /// Asks for the microphone if needed. Returns whether it is granted.
   static Future<MicPermission> ensureMic() async {
     if (Platform.isAndroid) {

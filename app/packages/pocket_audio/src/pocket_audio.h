@@ -310,6 +310,34 @@ PS_EXPORT void ps_looper_service(void);
 // call on the same thread.
 PS_EXPORT const char* ps_output_route(void);
 
+// ---- Layers (M6) ----------------------------------------------------------
+// A stack plays several takes at once, each at an offset (wiki/features/
+// layers.md). Positions, seek, loop and scrub work on the stack's timeline.
+
+// Opens an empty stack in the player (closes any take).
+PS_EXPORT void ps_player_open_stack(void);
+// Sets the stack: count tracks; track k plays clip_counts[k] clips (in order
+// from the flattened starts/ends/gains, NULL gains = 1) of the mono float
+// WAV paths[k], from offsets[k] on the timeline; 5 ms fades at each track's
+// ends. Returns the stack length, or -1 (bad arguments / unopenable file).
+PS_EXPORT int64_t ps_player_set_stack(int32_t count, const char* const* paths,
+                                      const int64_t* offsets,
+                                      const int32_t* clip_counts,
+                                      const int64_t* starts,
+                                      const int64_t* ends, const float* gains);
+// Volume of track k (mute/solo/volume); smoothed over 5 ms.
+PS_EXPORT void ps_player_set_track_gain(int32_t track, float gain);
+// Mixes the open stack (or take) at the current volumes into a mono float WAV.
+PS_EXPORT int32_t ps_player_bounce(const char* path);
+// Player position at the callback that wrote the current take's first
+// frame (-2 = not yet, -1 = no player position); lines up a layer recorded
+// over a stack: offset = stamp − calibrated round trip.
+PS_EXPORT int64_t ps_recorder_start_stamp(void);
+// Tests: runs one full audio callback (recorder, player, looper, probe)
+// without a device. Do not call while the engine is running.
+PS_EXPORT void ps_engine_process_offline(const float* input, float* output,
+                                         int32_t frames, int32_t channels);
+
 // ---- Latency probe (M2 go/no-go gate) ------------------------------------
 // wiki/decisions/d008-latency-gate-route.md. While running, a 5 ms chirp is
 // added to the output every interval and found again in the mic input; each

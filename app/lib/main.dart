@@ -12,6 +12,8 @@ import 'package:path_provider/path_provider.dart';
 import 'screens/latency_screen.dart';
 import 'screens/looper_screen.dart';
 import 'screens/record_screen.dart';
+import 'screens/stack_screen.dart';
+import 'stack/stack.dart';
 import 'screens/take_screen.dart';
 import 'takes/take_store.dart';
 import 'widgets/waveform.dart';
@@ -75,6 +77,8 @@ class TakesScreen extends StatefulWidget {
 class _TakesScreenState extends State<TakesScreen> {
   TakeStore? _store;
   List<Take> _takes = const [];
+  List<LayerStack> _stacks = const [];
+  Set<String> _inStacks = const {};
 
   @override
   void initState() {
@@ -86,12 +90,51 @@ class _TakesScreenState extends State<TakesScreen> {
     });
   }
 
-  void _refresh() => setState(() => _takes = _store?.list() ?? const []);
+  void _refresh() => setState(() {
+    _takes = _store?.list() ?? const [];
+    _stacks = _store?.listStacks() ?? const [];
+    _inStacks = _store?.takesInStacks() ?? const {};
+  });
+
+  void _newStack() {
+    final store = _store;
+    if (store == null) return;
+    _push(StackScreen(store: store, stack: store.newStack()));
+  }
 
   Future<void> _push(Widget screen) async {
     await Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => screen));
     if (mounted) _refresh();
+  }
+
+  Widget _header(String text, ThemeData theme) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+    child: Text(text, style: theme.textTheme.titleSmall),
+  );
+
+  static String _when(DateTime c) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${c.day}/${c.month} · ${two(c.hour)}:${two(c.minute)}';
+  }
+
+  Widget _takeTile(Take take, TakeStore store, ThemeData theme) {
+    final notes = [
+      if (take.edited) 'Edited',
+      if (_inStacks.contains(take.id)) 'In a stack',
+    ];
+    return ListTile(
+      leading: const Icon(Icons.graphic_eq),
+      title: Text(takeTitle(take)),
+      subtitle: notes.isEmpty ? null : Text(notes.join(' · ')),
+      trailing: Text(
+        formatDuration(take.duration),
+        style: theme.textTheme.bodyLarge?.copyWith(
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
+      onTap: () => _push(TakeScreen(store: store, take: take)),
+    );
   }
 
   @override
@@ -102,6 +145,12 @@ class _TakesScreenState extends State<TakesScreen> {
       appBar: AppBar(
         title: const Text('Pocket Studio'),
         actions: [
+          IconButton(
+            key: const Key('new-stack'),
+            tooltip: 'New stack (layers)',
+            icon: const Icon(Icons.layers),
+            onPressed: store == null ? null : _newStack,
+          ),
           IconButton(
             key: const Key('looper'),
             tooltip: 'Loop pedal',
@@ -131,7 +180,7 @@ class _TakesScreenState extends State<TakesScreen> {
       ),
       body: store == null
           ? const Center(child: CircularProgressIndicator())
-          : _takes.isEmpty
+          : _takes.isEmpty && _stacks.isEmpty
           ? Center(
               child: Text(
                 'No takes yet.\nTap the red button to record.',
@@ -139,25 +188,28 @@ class _TakesScreenState extends State<TakesScreen> {
                 style: theme.textTheme.bodyLarge,
               ),
             )
-          : ListView.separated(
+          : ListView(
               padding: const EdgeInsets.only(bottom: 120),
-              itemCount: _takes.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, i) {
-                final take = _takes[i];
-                return ListTile(
-                  leading: const Icon(Icons.graphic_eq),
-                  title: Text(takeTitle(take)),
-                  subtitle: take.edited ? const Text("Edited") : null,
-                  trailing: Text(
-                    formatDuration(take.duration),
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      fontFeatures: const [FontFeature.tabularFigures()],
+              children: [
+                if (_stacks.isNotEmpty) ...[
+                  _header('Stacks', theme),
+                  for (final s in _stacks)
+                    ListTile(
+                      leading: const Icon(Icons.layers),
+                      title: Text(
+                        'Stack · ${s.layers.length} '
+                        '${s.layers.length == 1 ? 'layer' : 'layers'}',
+                      ),
+                      subtitle: Text(
+                        _when(s.created) +
+                            (store.stackEdited(s) ? ' · Edited' : ''),
+                      ),
+                      onTap: () => _push(StackScreen(store: store, stack: s)),
                     ),
-                  ),
-                  onTap: () => _push(TakeScreen(store: store, take: take)),
-                );
-              },
+                  _header('Takes', theme),
+                ],
+                for (final take in _takes) _takeTile(take, store, theme),
+              ],
             ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       floatingActionButton: store == null

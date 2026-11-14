@@ -18,6 +18,7 @@
 
 #include "pocket_audio.h"
 #include "recorder.h"
+#include "wav_writer.h"
 
 namespace ps {
 namespace {
@@ -135,7 +136,21 @@ bool buildPeaksFromWav(const char* wavPath, const char* peaksPath,
 
 // ---------------------------------------------------------------------------
 
-Player::Player() = default;
+Player::Player() {
+  for (int k = 0; k < kMaxTracks; ++k) {
+    trackTarget_[k].store(1.0f);
+    trackGain_[k] = 1.0f;
+  }
+}
+
+void Player::stepTrackGains(size_t n) {
+  for (size_t k = 0; k < n && k < static_cast<size_t>(kMaxTracks); ++k) {
+    const float target = trackTarget_[k].load(std::memory_order_relaxed);
+    float& g = trackGain_[k];
+    if (g < target) g = std::min(target, g + kRampStep);
+    else if (g > target) g = std::max(target, g - kRampStep);
+  }
+}
 
 Player::~Player() { close(); }
 
@@ -181,9 +196,9 @@ float MappedWav::at(int64_t i) const {
   return s;
 }
 
-float Player::timelineAt(const Timeline* tl, int64_t t) const {
-  if (t < 0 || t >= tl->length || tl->clips.empty()) return 0.0f;
-  const auto& clips = tl->clips;
+float Player::trackAt(const Track& tr, int64_t t) {
+  if (t < 0 || t >= tr.length || tr.clips.empty()) return 0.0f;
+  const auto& clips = tr.clips;
   // Last clip starting at or before t.
   size_t lo = 0, hi = clips.size();
   while (hi - lo > 1) {
@@ -198,8 +213,8 @@ float Player::timelineAt(const Timeline* tl, int64_t t) const {
     const float u = (static_cast<float>(t - (join - b.half)) + 0.5f) /
                     static_cast<float>(2 * b.half);
     constexpr float kHalfPi = 1.57079632679f;
-    const float va = tl->src->at(a.srcEnd + (t - join)) * a.gain;
-    const float vb = tl->src->at(b.srcStart + (t - join)) * b.gain;
+    const float va = tr.src->at(a.srcEnd + (t - join)) * a.gain;
+    const float vb = tr.src->at(b.srcStart + (t - join)) * b.gain;
     return va * std::cos(u * kHalfPi) + vb * std::sin(u * kHalfPi);
   };
   if (lo + 1 < clips.size()) {
@@ -207,7 +222,28 @@ float Player::timelineAt(const Timeline* tl, int64_t t) const {
     if (t >= n.tStart - n.half) return mix(c, n);
   }
   if (lo > 0 && t < c.tStart + c.half) return mix(clips[lo - 1], c);
-  return tl->src->at(c.srcStart + (t - c.tStart)) * c.gain;
+  return tr.src->at(c.srcStart + (t - c.tStart)) * c.gain;
+}
+
+float Player::timelineAt(const Timeline* tl, int64_t t) const {
+  if (t < 0 || t >= tl->length) return 0.0f;
+  float y = 0.0f;
+  const size_t n = tl->tracks.size();
+  for (size_t k = 0; k < n; ++k) {
+    const Track& tr = tl->tracks[k];
+    const int64_t u = t - tr.offset;
+    if (u < 0 || u >= tr.length) continue;
+    float g = trackGain_[k];
+    if (g == 0.0f) continue;
+    if (tl->fadeEdges) {
+      // 5 ms in and out at the layer's ends, so no layer clicks on or off.
+      const float fade = static_cast<float>(kFadeFrames);
+      g *= std::min({1.0f, (static_cast<float>(u) + 0.5f) / fade,
+                     (static_cast<float>(tr.length - u) - 0.5f) / fade});
+    }
+    y += trackAt(tr, u) * g;
+  }
+  return y;
 }
 
 float Player::interp(const Timeline* tl, double pos) const {
@@ -222,28 +258,27 @@ float Player::interp(const Timeline* tl, double pos) const {
   return ((c3 * t + c2) * t + c1) * t + y1;
 }
 
-Timeline* Player::buildTimeline(std::shared_ptr<MappedWav> src,
-                                const int64_t* s, const int64_t* e,
-                                const float* g, int32_t n) {
-  auto* tl = new Timeline();
+Track Player::buildTrack(std::shared_ptr<MappedWav> src, const int64_t* s,
+                         const int64_t* e, const float* g, int32_t n) {
+  Track tr;
   const int64_t frames = src->frames;
-  tl->src = std::move(src);
+  tr.src = std::move(src);
   if (n <= 0) {
-    if (frames > 0) tl->clips.push_back({0, frames, 0, 1.0f, 0});
+    if (frames > 0) tr.clips.push_back({0, frames, 0, 1.0f, 0});
   } else {
-    tl->clips.reserve(static_cast<size_t>(n));
+    tr.clips.reserve(static_cast<size_t>(n));
     for (int32_t i = 0; i < n; ++i) {
       const int64_t a = std::clamp<int64_t>(s[i], 0, frames);
       const int64_t b = std::clamp<int64_t>(e[i], 0, frames);
-      if (b > a) tl->clips.push_back({a, b, 0, g ? g[i] : 1.0f, 0});
+      if (b > a) tr.clips.push_back({a, b, 0, g ? g[i] : 1.0f, 0});
     }
   }
   int64_t t = 0;
-  for (size_t i = 0; i < tl->clips.size(); ++i) {
-    TimelineClip& c = tl->clips[i];
+  for (size_t i = 0; i < tr.clips.size(); ++i) {
+    TimelineClip& c = tr.clips[i];
     c.tStart = t;
     if (i > 0) {
-      const TimelineClip& p = tl->clips[i - 1];
+      const TimelineClip& p = tr.clips[i - 1];
       c.half = std::min<int64_t>({kJoinHalfFrames, (p.srcEnd - p.srcStart) / 2,
                                   (c.srcEnd - c.srcStart) / 2});
       // Adjacent pieces of the recording need no crossfade.
@@ -251,8 +286,34 @@ Timeline* Player::buildTimeline(std::shared_ptr<MappedWav> src,
     }
     t += c.srcEnd - c.srcStart;
   }
-  tl->length = t;
+  tr.length = t;
+  return tr;
+}
+
+Timeline* Player::buildTimeline(std::shared_ptr<MappedWav> src,
+                                const int64_t* s, const int64_t* e,
+                                const float* g, int32_t n) {
+  auto* tl = new Timeline();
+  tl->tracks.push_back(buildTrack(std::move(src), s, e, g, n));
+  tl->length = tl->tracks[0].length;
   return tl;
+}
+
+void Player::swapTimeline(Timeline* fresh) {
+  Timeline* old;
+  {
+    std::lock_guard<std::mutex> tlock(timelineMutex_);
+    old = timeline_.exchange(fresh);
+    length_.store(fresh->length);
+  }
+  // A render that loaded `old` may still be running; once inRender_ is seen
+  // at 0, every later render uses `fresh`. Deleting `old` drops its sources;
+  // a mapping goes away with its last owner.
+  while (inRender_.load() != 0) std::this_thread::yield();
+  delete old;
+  // Keep loop and position inside the new timeline.
+  if (loopEnd_.load() > fresh->length) setLoop(0, 0);
+  if (position_.load() > fresh->length) seek(fresh->length);
 }
 
 int64_t Player::setClips(const char* sourcePath, const int64_t* srcStarts,
@@ -263,29 +324,129 @@ int64_t Player::setClips(const char* sourcePath, const int64_t* srcStarts,
   std::shared_ptr<MappedWav> src = recording_;
   if (sourcePath && sourcePath[0] != '\0') {
     const Timeline* cur = timeline_.load();
-    if (cur && cur->src->path == sourcePath) {
-      src = cur->src;  // same render: no need to map it again
+    if (cur && !cur->tracks.empty() && cur->tracks[0].src->path == sourcePath) {
+      src = cur->tracks[0].src;  // same render: no need to map it again
     } else {
       src = MappedWav::open(sourcePath);
       if (!src) return -1;
     }
   }
   Timeline* fresh = buildTimeline(std::move(src), srcStarts, srcEnds, gains, n);
-  Timeline* old;
+  swapTimeline(fresh);
+  return fresh->length;
+}
+
+void Player::openStack() {
+  std::lock_guard<std::mutex> lock(controlMutex_);
+  closeLocked();
+  pos_ = 0.0;
+  playGain_ = 0.0f;
+  scrubMode_ = false;
+  scrubGain_ = 0.0f;
+  velocity_ = 0.0;
+  xfade_ = false;
+  seekRequest_.store(-1);
+  loopStart_.store(0);
+  loopEnd_.store(0);
+  scrubRequested_.store(false);
+  shuttle_.store(0.0);
+  playing_.store(false);
+  finished_.store(false);
+  position_.store(0);
+  for (int k = 0; k < kMaxTracks; ++k) {
+    trackTarget_[k].store(1.0f);
+    trackGain_[k] = 1.0f;
+  }
+  auto* tl = new Timeline();
+  tl->fadeEdges = true;
+  timeline_.store(tl);
+  length_.store(0);
+  stopPrefetch_.store(false);
+  prefetch_ = std::thread(&Player::prefetchLoop, this);
+  active_.store(true);
+}
+
+int64_t Player::setStack(int32_t n, const char* const* paths,
+                         const int64_t* offsets, const int32_t* clipCounts,
+                         const int64_t* starts, const int64_t* ends,
+                         const float* gains) {
+  std::lock_guard<std::mutex> lock(controlMutex_);
+  if (n < 0 || n > kMaxTracks) return -1;
+  auto* fresh = new Timeline();
+  fresh->fadeEdges = true;
+  const Timeline* cur = timeline_.load();
+  int64_t at = 0;
+  for (int32_t k = 0; k < n; ++k) {
+    // Reuse mappings the current stack already has open.
+    std::shared_ptr<MappedWav> src;
+    if (cur) {
+      for (const auto& tr : cur->tracks) {
+        if (tr.src->path == paths[k]) src = tr.src;
+      }
+    }
+    if (!src) src = MappedWav::open(paths[k]);
+    if (!src) {
+      delete fresh;
+      return -1;
+    }
+    Track tr = buildTrack(std::move(src), starts + at, ends + at,
+                          gains ? gains + at : nullptr, clipCounts[k]);
+    at += clipCounts[k];
+    tr.offset = std::max<int64_t>(0, offsets[k]);
+    fresh->length = std::max(fresh->length, tr.offset + tr.length);
+    fresh->tracks.push_back(std::move(tr));
+  }
+  swapTimeline(fresh);
+  return fresh->length;
+}
+
+void Player::setTrackGain(int32_t k, float gain) {
+  if (k >= 0 && k < kMaxTracks) trackTarget_[k].store(gain);
+}
+
+bool Player::bounce(const char* path) {
+  std::lock_guard<std::mutex> lock(controlMutex_);
+  const Timeline* tl = timeline_.load();
+  if (!tl) return false;
+  // Mixed at the target volumes (no smoothing), exactly as playback settles.
+  Timeline copy;
   {
     std::lock_guard<std::mutex> tlock(timelineMutex_);
-    old = timeline_.exchange(fresh);
-    length_.store(fresh->length);
+    copy = *tl;  // shares the mappings; safe from a concurrent swap
   }
-  // A render that loaded `old` may still be running; once inRender_ is seen
-  // at 0, every later render uses `fresh`. Deleting `old` drops its source;
-  // the mapping goes away with the last owner.
-  while (inRender_.load() != 0) std::this_thread::yield();
-  delete old;
-  // Keep loop and position inside the new timeline.
-  if (loopEnd_.load() > fresh->length) setLoop(0, 0);
-  if (position_.load() > fresh->length) seek(fresh->length);
-  return fresh->length;
+  float g[kMaxTracks];
+  for (int k = 0; k < kMaxTracks; ++k) g[k] = trackTarget_[k].load();
+  WavWriter w;
+  if (!w.open(path, copy.tracks.empty() ? 48000 : copy.tracks[0].src->sampleRate)) {
+    return false;
+  }
+  std::vector<float> buf(16384);
+  for (int64_t t0 = 0; t0 < copy.length; t0 += static_cast<int64_t>(buf.size())) {
+    const size_t n = static_cast<size_t>(
+        std::min<int64_t>(static_cast<int64_t>(buf.size()), copy.length - t0));
+    for (size_t i = 0; i < n; ++i) {
+      const int64_t t = t0 + static_cast<int64_t>(i);
+      float y = 0.0f;
+      for (size_t k = 0; k < copy.tracks.size(); ++k) {
+        const Track& tr = copy.tracks[k];
+        const int64_t u = t - tr.offset;
+        if (u < 0 || u >= tr.length || g[k] == 0.0f) continue;
+        float gk = g[k];
+        if (copy.fadeEdges) {
+          const float fade = static_cast<float>(kFadeFrames);
+          gk *= std::min({1.0f, (static_cast<float>(u) + 0.5f) / fade,
+                          (static_cast<float>(tr.length - u) - 0.5f) / fade});
+        }
+        y += trackAt(tr, u) * gk;
+      }
+      buf[i] = y;
+    }
+    if (!w.write(buf.data(), n)) {
+      w.close();
+      return false;
+    }
+  }
+  return w.close();
 }
 
 int64_t Player::zeroCrossing(int64_t srcFrame, int32_t radius) const {
@@ -306,9 +467,13 @@ std::pair<std::shared_ptr<MappedWav>, int64_t> Player::sourceFrameAt(
   std::lock_guard<std::mutex> lock(timelineMutex_);
   const Timeline* tl = timeline_.load();
   if (!tl || t < 0 || t >= tl->length) return {nullptr, -1};
-  for (const auto& c : tl->clips) {
-    if (t < c.tStart + (c.srcEnd - c.srcStart)) {
-      return {tl->src, c.srcStart + (t - c.tStart)};
+  for (const auto& tr : tl->tracks) {
+    const int64_t u = t - tr.offset;
+    if (u < 0 || u >= tr.length) continue;
+    for (const auto& c : tr.clips) {
+      if (u < c.tStart + (c.srcEnd - c.srcStart)) {
+        return {tr.src, c.srcStart + (u - c.tStart)};
+      }
     }
   }
   return {nullptr, -1};
@@ -369,6 +534,7 @@ void Player::render(float* out, uint32_t frames, uint32_t channels) {
     const double shuttle = shuttle_.load();
     const double target = scrubTarget_.load();
     for (uint32_t i = 0; i < frames; ++i) {
+      stepTrackGains(tl->tracks.size());
       const double want =
           shuttle != 0.0
               ? shuttle
@@ -409,6 +575,7 @@ void Player::render(float* out, uint32_t frames, uint32_t channels) {
                                : 0;
 
   for (uint32_t i = 0; i < frames; ++i) {
+    stepTrackGains(tl->tracks.size());
     if (playGain_ < target) {
       playGain_ = std::min(target, playGain_ + kRampStep);
     } else if (playGain_ > target) {
@@ -476,6 +643,10 @@ int32_t Player::open(const char* path) {
   playing_.store(false);
   finished_.store(false);
   position_.store(0);
+  for (int k = 0; k < kMaxTracks; ++k) {
+    trackTarget_[k].store(1.0f);
+    trackGain_[k] = 1.0f;
+  }
   timeline_.store(buildTimeline(rec, nullptr, nullptr, nullptr, 0));
   length_.store(rec->frames);
 
@@ -542,16 +713,32 @@ void Player::prefetchLoop() {
   // around where each one maps. Holding the shared_ptr keeps the mapping
   // alive while madvise runs, even if the timeline is swapped meanwhile.
   auto touchT = [&](int64_t t) {
-    const auto [src, centre] = sourceFrameAt(t);
-    if (!src) return;
-    const int64_t from = std::max<int64_t>(0, centre - kPrefetchBack);
-    const int64_t to = std::min<int64_t>(src->frames, centre + kPrefetchAhead);
-    if (to <= from) return;
-    const size_t dataStart = static_cast<size_t>(src->samples - src->map);
-    size_t a = dataStart + static_cast<size_t>(from) * 4;
-    const size_t b = std::min(src->bytes, dataStart + static_cast<size_t>(to) * 4);
-    a -= a % page;
-    ::madvise(const_cast<uint8_t*>(src->map + a), b - a, MADV_WILLNEED);
+    // Every layer playing at t, not just the first.
+    std::vector<std::pair<std::shared_ptr<MappedWav>, int64_t>> spots;
+    {
+      std::lock_guard<std::mutex> lock(timelineMutex_);
+      const Timeline* tl = timeline_.load();
+      if (!tl) return;
+      for (const auto& tr : tl->tracks) {
+        const int64_t u = std::clamp<int64_t>(t - tr.offset, 0, tr.length);
+        for (const auto& c : tr.clips) {
+          if (u < c.tStart + (c.srcEnd - c.srcStart)) {
+            spots.emplace_back(tr.src, c.srcStart + (u - c.tStart));
+            break;
+          }
+        }
+      }
+    }
+    for (const auto& [src, centre] : spots) {
+      const int64_t from = std::max<int64_t>(0, centre - kPrefetchBack);
+      const int64_t to = std::min<int64_t>(src->frames, centre + kPrefetchAhead);
+      if (to <= from) continue;
+      const size_t dataStart = static_cast<size_t>(src->samples - src->map);
+      size_t a = dataStart + static_cast<size_t>(from) * 4;
+      const size_t b = std::min(src->bytes, dataStart + static_cast<size_t>(to) * 4);
+      a -= a % page;
+      ::madvise(const_cast<uint8_t*>(src->map + a), b - a, MADV_WILLNEED);
+    }
   };
   while (!stopPrefetch_.load()) {
     touchT(position_.load());

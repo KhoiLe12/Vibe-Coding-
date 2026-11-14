@@ -28,6 +28,7 @@ import 'package:pocket_audio/pocket_audio.dart';
 import '../audio/audio_control.dart';
 import '../edit/edit_list.dart';
 import '../edit/render_cache.dart';
+import '../stack/bounce.dart';
 import '../takes/take_store.dart';
 import '../widgets/waveform.dart';
 
@@ -120,11 +121,17 @@ class _TakeScreenState extends State<TakeScreen> {
   @override
   void initState() {
     super.initState();
-    final edits = widget.store.loadEdits(widget.take.id, widget.take.frames);
+    final edits = widget.store.loadEdits(
+      widget.take.editsId,
+      widget.take.frames,
+      clamp: widget.take.isStackMix,
+    );
     _history = EditHistory(edits);
     _viewSpan = math.max(1, edits.length).toDouble();
+    // Starting audio can fail right after launch on iOS; play retries
+    // (AudioControl.ensureOutput), so that is not an error for the take.
+    AudioControl.ensureOutput();
     try {
-      AudioControl.useOutput();
       PocketAudio.openTake(widget.take.wav.path);
       _pushClips(edits);
       _viewSpan = math.max(1, _length).toDouble();
@@ -583,10 +590,20 @@ class _TakeScreenState extends State<TakeScreen> {
 
   // ---- transport ----
 
-  void _toggle() {
+  Future<void> _toggle() async {
     if (PocketAudio.isPlaying) {
       PocketAudio.playing = false;
     } else {
+      if (!await AudioControl.ensureOutput()) {
+        if (mounted) {
+          setState(
+            () => _error =
+                'iOS did not let the app start audio. '
+                'Try again in a moment.',
+          );
+        }
+        return;
+      }
       final loop = PocketAudio.loop;
       if (loop != null && (_position < loop.start || _position >= loop.end)) {
         PocketAudio.seek(loop.start);
@@ -714,6 +731,20 @@ class _TakeScreenState extends State<TakeScreen> {
     });
   }
 
+  /// Saves what you hear (edits, pitch, tempo) as a new take.
+  Future<void> _bounceEdited() async {
+    final t = widget.store.newTake();
+    try {
+      await bounceStackInBackground(t.wav);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Bounced to a new take in your list.')),
+      );
+    } on Object catch (e) {
+      if (mounted) setState(() => _error = 'Bounce failed ($e).');
+    }
+  }
+
   Future<void> _deleteTake() async {
     final ok = await showDialog<bool>(
       context: context,
@@ -775,14 +806,28 @@ class _TakeScreenState extends State<TakeScreen> {
             icon: const Icon(Icons.redo),
           ),
           PopupMenuButton<String>(
-            onSelected: (v) => v == 'revert' ? _revert() : _deleteTake(),
+            onSelected: (v) => switch (v) {
+              'revert' => _revert(),
+              'bounce' => _bounceEdited(),
+              _ => _deleteTake(),
+            },
             itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'bounce',
+                enabled: _pending == null,
+                child: const Text('Bounce to new take'),
+              ),
               PopupMenuItem(
                 value: 'revert',
                 enabled: !_edits.isWhole(widget.take.frames),
                 child: const Text('Revert to original'),
               ),
-              const PopupMenuItem(value: 'delete', child: Text('Delete take')),
+              // A stack's mix is deleted with its stack, not from here.
+              if (!widget.take.isStackMix)
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Text('Delete take'),
+                ),
             ],
           ),
         ],

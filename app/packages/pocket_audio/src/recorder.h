@@ -35,7 +35,11 @@ class Recorder {
   ~Recorder();
 
   // ---- audio thread ----
-  void process(const float* mono, uint32_t frames);
+  // `stamp`: the player position at the start of this callback. The stamp
+  // of the callback that writes a take's first frame is kept, so a layer
+  // recorded over a stack can be lined up (M6, wiki/features/layers.md).
+  void process(const float* mono, uint32_t frames, int64_t stamp = -1);
+  int64_t startStamp() const { return startStamp_.load(); }
 
   // ---- control (any non-audio thread) ----
   // Starts a take: opens the WAV and the writer thread. Returns PS_* code.
@@ -82,6 +86,7 @@ class Recorder {
   std::atomic<bool> clipped_{false};
 
   std::atomic<int64_t> framesWritten_{0};
+  std::atomic<int64_t> startStamp_{-1};
   std::atomic<int64_t> dropped_{0};
   std::atomic<bool> writeError_{false};
 

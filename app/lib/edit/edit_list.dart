@@ -233,15 +233,16 @@ class EditList {
   int get hashCode => Object.hash(tune, Object.hashAll(clips));
 }
 
-/// Unlimited undo/redo over immutable snapshots (d012). Session only; the
+/// Unlimited undo/redo over immutable snapshots (d012): clip lists, stacks.
+/// [T] must have value equality. Session only; the
 /// history is persisted with projects in M8 (wiki/features/undo-history.md).
-class EditHistory {
-  EditHistory(EditList initial) : _states = [(label: '', list: initial)];
+class History<T> {
+  History(T initial) : _states = [(label: '', list: initial)];
 
-  final List<({String label, EditList list})> _states;
+  final List<({String label, T list})> _states;
   int _index = 0;
 
-  EditList get current => _states[_index].list;
+  T get current => _states[_index].list;
   bool get canUndo => _index > 0;
   bool get canRedo => _index < _states.length - 1;
   String? get undoLabel => canUndo ? _states[_index].label : null;
@@ -250,7 +251,7 @@ class EditHistory {
   /// Records [next] as a new state. Ignored if nothing changed. Clears redo.
   /// With [coalesce], a run of edits with the same label (e.g. tapping the
   /// pitch button five times) becomes a single undo step.
-  bool push(String label, EditList next, {bool coalesce = false}) {
+  bool push(String label, T next, {bool coalesce = false}) {
     if (next == current) return false;
     _states.removeRange(_index + 1, _states.length);
     if (coalesce && _index > 0 && _states[_index].label == label) {
@@ -267,13 +268,16 @@ class EditHistory {
     return true;
   }
 
-  EditList undo() {
+  T undo() {
     if (canUndo) _index--;
     return current;
   }
 
-  EditList redo() {
+  T redo() {
     if (canRedo) _index++;
     return current;
   }
 }
+
+/// The take editor's history (clip lists).
+typedef EditHistory = History<EditList>;

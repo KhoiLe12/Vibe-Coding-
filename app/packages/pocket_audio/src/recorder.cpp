@@ -40,10 +40,13 @@ Recorder::Recorder() : ring_(kRingCapacity), scratch_(kScratchFrames) {}
 
 Recorder::~Recorder() { end(nullptr); }
 
-void Recorder::process(const float* in, uint32_t frames) {
+void Recorder::process(const float* in, uint32_t frames, int64_t stamp) {
   const float target = targetGain_.load(std::memory_order_relaxed);
   inProcess_.fetch_add(1);
   const bool writing = active_.load() && !paused_.load(std::memory_order_relaxed);
+  if (writing && startStamp_.load(std::memory_order_relaxed) == -2) {
+    startStamp_.store(stamp);  // first frames of the take
+  }
 
   float peak = 0.0f;
   bool clip = false;
@@ -86,6 +89,7 @@ int32_t Recorder::begin(const char* wavPath, uint32_t sampleRate) {
   ring_.reset();
   framesWritten_.store(0);
   dropped_.store(0);
+  startStamp_.store(-2);  // set by the first callback that writes
   writeError_.store(false);
   paused_.store(false);
   {

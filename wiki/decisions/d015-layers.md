@@ -23,3 +23,4 @@ The plan's [[loop-pedal]] was built as M5a. The human then said the feature they
 ## Consequences
 - The engine needs **several timelines playing at once**, each with an offset and gain — the multi-source playback the plan's Projects milestone (now M8) also needs, so M8 builds on it.
 - A stack references takes by id; deleting a take that a stack uses needs a rule (warn, or remove the layer) — decided during the build.
+- *2026-11-14:* the first build re-aligned the earliest layer to 0:00 after every change; removed at the human's request — offsets are kept as placed (≥ 0), so a stack can start with silence.

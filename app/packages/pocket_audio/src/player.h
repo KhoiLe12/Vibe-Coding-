@@ -66,15 +66,28 @@ struct TimelineClip {
                  // clip (0 for the first clip)
 };
 
-struct Timeline {
+// One clip list over one source file (a take's recording or its render),
+// placed at `offset` on the timeline.
+struct Track {
   std::shared_ptr<MappedWav> src;  // the recording, or a render of it (M4)
   std::vector<TimelineClip> clips;
-  int64_t length = 0;
+  int64_t length = 0;   // of the clip list
+  int64_t offset = 0;   // where it starts on the timeline (M6 layers)
+};
+
+// What the player plays: one track (a take) or several mixed (a stack of
+// layers, M6, wiki/features/layers.md). Per-track gains live in the player
+// (smoothed on the audio thread), indexed like `tracks`.
+struct Timeline {
+  std::vector<Track> tracks;
+  int64_t length = 0;         // end of the last track
+  bool fadeEdges = false;     // 5 ms fade at each track's start and end
 };
 
 class Player {
  public:
   static constexpr uint32_t kJoinHalfFrames = 240;  // 10 ms crossfade per join
+  static constexpr int32_t kMaxTracks = 16;          // layers in a stack
   static constexpr uint32_t kFadeFrames = 240;  // 5 ms at 48 kHz
 
   Player();
@@ -102,6 +115,22 @@ class Player {
   // can't be opened. The caller re-seeks.
   int64_t setClips(const char* sourcePath, const int64_t* srcStarts,
                    const int64_t* srcEnds, const float* gains, int32_t n);
+
+  // Stack of layers (M6): opens no recording; then setStack().
+  void openStack();
+  // Replaces the stack: n tracks; track k plays clipCounts[k] clips (taken
+  // in order from the flattened starts/ends/gains) of paths[k], starting at
+  // offsets[k] on the timeline. Each track fades in/out over 5 ms at its
+  // ends. Returns the stack length, or -1 if a source can't be opened.
+  int64_t setStack(int32_t n, const char* const* paths,
+                   const int64_t* offsets, const int32_t* clipCounts,
+                   const int64_t* starts, const int64_t* ends,
+                   const float* gains);
+  // Volume of track k (mute/solo/volume), smoothed — never clicks.
+  void setTrackGain(int32_t k, float gain);
+  // Offline mix of the whole timeline at the current track volumes into a
+  // mono float WAV (control thread). Returns false on error.
+  bool bounce(const char* path);
 
   // Nearest zero crossing of the recording within ±radius of srcFrame (the
   // index of the first sample after the sign change), or srcFrame if none.
@@ -131,12 +160,18 @@ class Player {
   }
 
  private:
-  // Timeline frame, with equal-power crossfades inside each join.
+  // One track at its own frame u, with equal-power crossfades inside joins.
+  static float trackAt(const Track& tr, int64_t u);
+  // Timeline frame: the tracks mixed at the current smoothed gains.
   float timelineAt(const Timeline* tl, int64_t t) const;
   float interp(const Timeline* tl, double pos) const;  // 4-point Hermite
+  static Track buildTrack(std::shared_ptr<MappedWav> src, const int64_t* s,
+                          const int64_t* e, const float* g, int32_t n);
   static Timeline* buildTimeline(std::shared_ptr<MappedWav> src,
                                  const int64_t* s, const int64_t* e,
                                  const float* g, int32_t n);
+  void swapTimeline(Timeline* fresh);
+  void stepTrackGains(size_t n);  // audio thread, once per output frame
   void prefetchLoop();
   void closeLocked();
 
@@ -173,6 +208,8 @@ class Player {
   uint32_t xfadeT_ = 0;
 
   std::atomic<Timeline*> timeline_{nullptr};
+  std::atomic<float> trackTarget_[kMaxTracks];
+  float trackGain_[kMaxTracks] = {};  // audio thread, smoothed
   std::mutex timelineMutex_;  // swap/delete vs prefetch reads
 
   std::thread prefetch_;

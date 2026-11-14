@@ -443,6 +443,66 @@ external void ps_looper_service();
 @ffi.Native<ffi.Pointer<ffi.Char> Function()>()
 external ffi.Pointer<ffi.Char> ps_output_route();
 
+/// Opens an empty stack in the player (closes any take).
+@ffi.Native<ffi.Void Function()>()
+external void ps_player_open_stack();
+
+/// Sets the stack: count tracks; track k plays clip_counts[k] clips (in order
+/// from the flattened starts/ends/gains, NULL gains = 1) of the mono float
+/// WAV paths[k], from offsets[k] on the timeline; 5 ms fades at each track's
+/// ends. Returns the stack length, or -1 (bad arguments / unopenable file).
+@ffi.Native<
+  ffi.Int64 Function(
+    ffi.Int32,
+    ffi.Pointer<ffi.Pointer<ffi.Char>>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int32>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Float>,
+  )
+>()
+external int ps_player_set_stack(
+  int count,
+  ffi.Pointer<ffi.Pointer<ffi.Char>> paths,
+  ffi.Pointer<ffi.Int64> offsets,
+  ffi.Pointer<ffi.Int32> clip_counts,
+  ffi.Pointer<ffi.Int64> starts,
+  ffi.Pointer<ffi.Int64> ends,
+  ffi.Pointer<ffi.Float> gains,
+);
+
+/// Volume of track k (mute/solo/volume); smoothed over 5 ms.
+@ffi.Native<ffi.Void Function(ffi.Int32, ffi.Float)>()
+external void ps_player_set_track_gain(int track, double gain);
+
+/// Mixes the open stack (or take) at the current volumes into a mono float WAV.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<ffi.Char>)>()
+external int ps_player_bounce(ffi.Pointer<ffi.Char> path);
+
+/// Player position at the callback that wrote the current take's first
+/// frame (-2 = not yet, -1 = no player position); lines up a layer recorded
+/// over a stack: offset = stamp − calibrated round trip.
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_recorder_start_stamp();
+
+/// Tests: runs one full audio callback (recorder, player, looper, probe)
+/// without a device. Do not call while the engine is running.
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Int32,
+    ffi.Int32,
+  )
+>()
+external void ps_engine_process_offline(
+  ffi.Pointer<ffi.Float> input,
+  ffi.Pointer<ffi.Float> output,
+  int frames,
+  int channels,
+);
+
 /// Starts chirping every interval_ms (at least ~405 ms) and clears results.
 @ffi.Native<ffi.Void Function(ffi.Int32)>()
 external void ps_latency_start(int interval_ms);
