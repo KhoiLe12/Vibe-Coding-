@@ -3,8 +3,9 @@
 Record audio and edit it on the spot: chop, scrub, transpose and loop, on iOS
 and Android. Open source under Apache-2.0.
 
-**Status:** Milestone 0 (bootstrap). The app plays a "hello tone" through the
-shared C++ audio core. See `wiki/overview.md` for the roadmap.
+**Status:** Milestones 1–4, loop pedal part one (M5a) and Layers (M6) done on
+iOS; working on M7 (sampling tools). Android builds in CI but is not yet tested
+on a phone. See `wiki/overview.md` for the roadmap.
 
 ## Layout
 

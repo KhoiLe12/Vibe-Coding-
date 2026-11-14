@@ -11,6 +11,7 @@
 #include <vector>
 #include <mutex>
 
+#include "exporter.h"
 #include "dsp_processor.h"
 #include "latency_probe.h"
 #include "looper.h"
@@ -309,7 +310,8 @@ int64_t ps_player_length(void) { return g_player.length(); }
 int64_t ps_player_set_clips(const int64_t* src_starts, const int64_t* src_ends,
                             const float* gains, int32_t count) {
   if (count > 0 && (!src_starts || !src_ends)) return -1;
-  return g_player.setClips(nullptr, src_starts, src_ends, gains, count);
+  return g_player.setClips(nullptr, src_starts, src_ends, gains, nullptr,
+                           nullptr, count);
 }
 
 int64_t ps_player_set_source_clips(const char* source_path,
@@ -317,7 +319,18 @@ int64_t ps_player_set_source_clips(const char* source_path,
                                    const int64_t* src_ends, const float* gains,
                                    int32_t count) {
   if (count > 0 && (!src_starts || !src_ends)) return -1;
-  return g_player.setClips(source_path, src_starts, src_ends, gains, count);
+  return g_player.setClips(source_path, src_starts, src_ends, gains, nullptr,
+                           nullptr, count);
+}
+
+int64_t ps_player_set_source_clips_fx(const char* source_path,
+                                      const int64_t* src_starts,
+                                      const int64_t* src_ends,
+                                      const float* gains, const double* fades,
+                                      const uint8_t* reverse, int32_t count) {
+  if (count > 0 && (!src_starts || !src_ends)) return -1;
+  return g_player.setClips(source_path, src_starts, src_ends, gains, fades,
+                           reverse, count);
 }
 
 int64_t ps_player_zero_crossing(int64_t src_frame, int32_t radius) {
@@ -425,7 +438,52 @@ int32_t ps_render_start(const char* input, int64_t start, int64_t end,
   return g_dsp.start(job);
 }
 
+int32_t ps_render_start_ex(const char* input, int64_t start, int64_t end,
+                           const char* output, double semitones, double tempo,
+                           int32_t formant, double speed) {
+  if (!input || !output || !(speed > 0)) return -1;
+  ps::RenderJob job;
+  job.input = input;
+  job.start = start;
+  job.end = end;
+  job.output = output;
+  job.semitones = semitones;
+  job.tempo = tempo;
+  job.formant = formant != 0;
+  job.speed = speed;
+  return g_dsp.start(job);
+}
+
 void ps_render_cancel(void) { g_dsp.cancel(); }
+
+// ---- Sampling tools (M7) ----
+
+int32_t ps_export_wav(const char* source_path, const int64_t* starts,
+                      const int64_t* ends, const float* gains,
+                      const double* fades, const uint8_t* reverse,
+                      int32_t count,
+                      const char* output, int32_t sample_rate, int32_t bits,
+                      int64_t loop_frames) {
+  if (!source_path || !output || count < 0 ||
+      (count > 0 && (!starts || !ends))) {
+    return PS_ERROR_FILE;
+  }
+  ps::ExportJob job;
+  job.source = source_path;
+  job.clips =
+      ps::Player::specsFrom(starts, ends, gains, fades, reverse, count);
+  job.output = output;
+  job.sampleRate = static_cast<uint32_t>(std::max(0, sample_rate));
+  job.bits = bits;
+  job.loopFrames = loop_frames;
+  return ps::exportWav(job) ? PS_OK : PS_ERROR_FILE;
+}
+
+double ps_peak(const char* path, const int64_t* starts, const int64_t* ends,
+               int32_t count) {
+  if (!path || count < 0 || (count > 0 && (!starts || !ends))) return -1.0;
+  return ps::peakOf(path, starts, ends, count);
+}
 int32_t ps_render_job(void) { return g_dsp.jobId(); }
 int32_t ps_render_state(void) { return g_dsp.state(); }
 double ps_render_progress(void) { return g_dsp.progress(); }
@@ -486,6 +544,19 @@ int64_t ps_player_set_stack(int32_t count, const char* const* paths,
   }
   return g_player.setStack(count, paths, offsets, clip_counts, starts, ends,
                            gains);
+}
+
+int64_t ps_player_set_stack_fx(int32_t count, const char* const* paths,
+                               const int64_t* offsets,
+                               const int32_t* clip_counts,
+                               const int64_t* starts, const int64_t* ends,
+                               const float* gains, const double* fades,
+                               const uint8_t* reverse) {
+  if (count < 0 || (count > 0 && (!paths || !offsets || !clip_counts))) {
+    return -1;
+  }
+  return g_player.setStack(count, paths, offsets, clip_counts, starts, ends,
+                           gains, fades, reverse);
 }
 
 void ps_player_set_track_gain(int32_t track, float gain) {

@@ -13,21 +13,31 @@
 //   d012-chop-model.md)
 // - pitch & tempo for the whole take, rendered in the background
 //   (wiki/decisions/d013-transpose-tempo-design.md)
+// - sampling tools (M7, wiki/decisions/d016-sampling-tools.md): varispeed in
+//   the pitch/tempo sheet; reverse, normalize, trim silence on the selection
+//   or whole take (tools button); fade in / out by dragging the handles in
+//   the top corners of the take or selection; export one-shot / loop /
+//   slices and share (menu)
 //
 // Two time domains: the engine (and so positions, selection, loop and view
 // here) runs in *display* frames — the render's timing when a stretched
 // render is playing. The edit list works in *edit* frames — the recording's
-// timing. _toEdit / _toDisplay convert with the tempo of what is playing.
+// timing. _toEdit / _toDisplay convert with the time ratio (tempo ×
+// varispeed) of what is playing.
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:pocket_audio/pocket_audio.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../audio/audio_control.dart';
 import '../edit/edit_list.dart';
 import '../edit/render_cache.dart';
+import '../edit/sample_export.dart';
 import '../stack/bounce.dart';
 import '../takes/take_store.dart';
 import '../widgets/waveform.dart';
@@ -114,13 +124,32 @@ class _TakeScreenState extends State<TakeScreen> {
   /// on the phone.
   String? _lastRender;
 
-  double get _tempo => _active?.tune.tempo ?? 1.0;
+  /// Recording frames per displayed frame (tempo × varispeed) of what plays.
+  double get _tempo => _active?.tune.timeRatio ?? 1.0;
+
+  /// A tool or export is working in the background.
+  String? _busy;
+  int _exportFormat = 0;
+  ExportKind _exportKind = ExportKind.oneShot;
+  double _silenceDb = -48;
+
+  // A fade handle being dragged: which one, and its length (display frames).
+  ({bool fadeIn, int frames})? _fadeDrag;
+  static const double _handleSize = 18;
+
+  /// Where the last finger went down on the waveform (the scale gesture
+  /// starts only after the finger has moved).
+  Offset? _downAt;
   int _toEdit(num t) => (t * _tempo).round();
   int _toDisplay(num e) => (e / _tempo).round();
+
+  /// This screen's claim on the player (AudioControl.claimPlayer).
+  late final int _playerToken;
 
   @override
   void initState() {
     super.initState();
+    _playerToken = AudioControl.claimPlayer();
     final edits = widget.store.loadEdits(
       widget.take.editsId,
       widget.take.frames,
@@ -172,9 +201,10 @@ class _TakeScreenState extends State<TakeScreen> {
     _ticker?.cancel();
     _renderTimer?.cancel();
     if (_pending != null) PocketAudio.cancelRender();
-    if (PocketAudio.isScrubbing) PocketAudio.endScrub();
-    PocketAudio.closeTake();
-    AudioControl.release();
+    if (AudioControl.ownsPlayer(_playerToken) && PocketAudio.isScrubbing) {
+      PocketAudio.endScrub();
+    }
+    AudioControl.releasePlayer(_playerToken);
     super.dispose();
   }
 
@@ -223,9 +253,7 @@ class _TakeScreenState extends State<TakeScreen> {
       }
     }
     _active = null;
-    _length = PocketAudio.setClips([
-      for (final c in e.clips) (start: c.start, end: c.end, gain: c.gain),
-    ]);
+    _length = PocketAudio.setClips([for (final c in e.clips) c.toPlay()]);
   }
 
   // ---- rendering (wiki/decisions/d013-transpose-tempo-design.md) ----
@@ -271,6 +299,7 @@ class _TakeScreenState extends State<TakeScreen> {
       semitones: tune.semitones,
       tempo: tune.tempo,
       formant: tune.formant,
+      speed: tune.speed,
     );
     _renderClock
       ..reset()
@@ -372,20 +401,19 @@ class _TakeScreenState extends State<TakeScreen> {
     );
   }
 
-  /// Moves timeline frame [t] to the nearest zero crossing of the recording
-  /// within ±5 ms, without leaving its clip.
   /// Moves edit frame [t] to the nearest zero crossing of the recording
   /// within ±5 ms, without leaving its clip.
   int _snap(int t) {
     if (t <= 0 || t >= _edits.length) return t;
     final l = _edits.locate(t);
     final c = _edits.clips[l.index];
-    final s = c.start + l.offset;
+    final s = c.boundaryAt(l.offset);
     final z = PocketAudio.zeroCrossing(
       s,
       radius: _snapRadius,
     ).clamp(c.start, c.end);
-    return t + (z - s);
+    // A reversed clip runs backwards through the recording.
+    return t + (c.reverse ? s - z : z - s);
   }
 
   /// Records an edit and applies it. [position] and [select] are in *edit*
@@ -637,6 +665,12 @@ class _TakeScreenState extends State<TakeScreen> {
   void _onScaleStart(ScaleStartDetails d, double width) {
     if (d.pointerCount >= 2) {
       _startZoom(d.localFocalPoint.dx, width, 1);
+    } else if (_handleAt(_downAt ?? d.localFocalPoint, width)
+        case final fadeIn?) {
+      setState(
+        () => _fadeDrag = (fadeIn: fadeIn, frames: _fadeLength(fadeIn: fadeIn)),
+      );
+      _dragFade(fadeIn, d.localFocalPoint.dx, width);
     } else {
       PocketAudio.beginScrub();
       _scrubAnchorFrame = PocketAudio.playbackPosition.toDouble();
@@ -652,6 +686,7 @@ class _TakeScreenState extends State<TakeScreen> {
       _scrubbing = false;
     }
     _zooming = true;
+    _fadeDrag = null; // a pinch cancels a half-dragged fade
     _zoomBaseScale = scale;
     _zoomBaseSpan = _viewSpan;
     _zoomFocusFrame = _viewStart + focalX / width * _viewSpan;
@@ -666,6 +701,8 @@ class _TakeScreenState extends State<TakeScreen> {
       setState(() {
         _setView(_zoomFocusFrame - d.localFocalPoint.dx / width * span, span);
       });
+    } else if (_fadeDrag case final f? when !_zooming) {
+      _dragFade(f.fadeIn, d.localFocalPoint.dx, width);
     } else if (_scrubbing) {
       final perPixel = math.min(_viewSpan / width, _maxScrubFramesPerPixel);
       PocketAudio.scrubTarget =
@@ -675,6 +712,7 @@ class _TakeScreenState extends State<TakeScreen> {
   }
 
   void _onScaleEnd(ScaleEndDetails d) {
+    if (!_zooming) _commitFade();
     if (_scrubbing) {
       PocketAudio.endScrub();
       setState(() => _scrubbing = false);
@@ -683,6 +721,7 @@ class _TakeScreenState extends State<TakeScreen> {
   }
 
   void _onLongPressStart(LongPressStartDetails d, double width) {
+    if (_handleAt(d.localPosition, width) != null) return;
     final f = _frameAt(d.localPosition.dx, width);
     setState(() {
       _selAnchor = f;
@@ -691,6 +730,7 @@ class _TakeScreenState extends State<TakeScreen> {
   }
 
   void _onLongPressMove(LongPressMoveUpdateDetails d, double width) {
+    if (_selAnchor == null) return;
     final f = _frameAt(d.localPosition.dx, width);
     setState(() {
       _selStart = math.min(_selAnchor!, f);
@@ -699,6 +739,7 @@ class _TakeScreenState extends State<TakeScreen> {
   }
 
   void _onLongPressEnd() {
+    if (_selAnchor == null) return;
     final s = _selStart!, e = _selEnd!;
     _selAnchor = null;
     if (e - s < sampleRate ~/ 20) {
@@ -745,6 +786,232 @@ class _TakeScreenState extends State<TakeScreen> {
     }
   }
 
+  // ---- sampling tools (M7, wiki/decisions/d016-sampling-tools.md) ----
+
+  /// What a tool acts on, in edit frames: the selection (snapped) or the
+  /// whole take.
+  ({int a, int b, bool whole}) get _toolRange {
+    final sel = _snappedSelection;
+    return sel == null
+        ? (a: 0, b: _edits.length, whole: true)
+        : (a: sel.a, b: sel.b, whole: false);
+  }
+
+  void _toolDone(String label, EditList next, ({int a, int b, bool whole}) r) {
+    _apply(
+      label,
+      next,
+      position: _toEdit(_position).clamp(0, next.length),
+      select: r.whole ? null : (start: r.a, end: r.b),
+    );
+  }
+
+  void _reverse() {
+    final r = _toolRange;
+    _toolDone('Reverse', _edits.reverse(r.a, r.b), r);
+  }
+
+  // ---- fade handles (human, 2026-11-14: a needle per clip was still
+  // clunky; fades sit at the start and end of the take or the selection) ----
+
+  /// The region the fade handles act on: the selection, else the whole take.
+  /// Display frames for drawing, edit frames (snapped) for the edit.
+  ({int from, int to, int a, int b}) get _fadeRegion {
+    final s = _selStart, e = _selEnd;
+    final sel = _hasFadeSelection ? _snappedSelection : null;
+    return sel == null
+        ? (from: 0, to: _length, a: 0, b: _edits.length)
+        : (from: s!, to: e!, a: sel.a, b: sel.b);
+  }
+
+  bool get _hasFadeSelection =>
+      _selStart != null && _selAnchor == null && _selEnd! > _selStart!;
+
+  /// Fade lengths in display frames: while a handle is dragged, its live
+  /// value.
+  int _fadeLength({required bool fadeIn}) {
+    final d = _fadeDrag;
+    if (d != null && d.fadeIn == fadeIn) return d.frames;
+    final r = _fadeRegion;
+    return _toDisplay(
+      fadeIn ? _edits.regionFadeIn(r.a, r.b) : _edits.regionFadeOut(r.a, r.b),
+    );
+  }
+
+  /// Display frame of a handle: where its fade reaches full volume.
+  int _handleFrame({required bool fadeIn}) {
+    final r = _fadeRegion;
+    return fadeIn
+        ? r.from + _fadeLength(fadeIn: true)
+        : r.to - _fadeLength(fadeIn: false);
+  }
+
+  /// Which handle (if any) is under [p] in a waveform [width] wide. The
+  /// handles are squares in the top corners of the fades.
+  bool? _handleAt(Offset p, double width) {
+    if (_edits.clips.isEmpty || p.dy > _handleSize * 2.5) return null;
+    double xOf(int frame) => (frame - _viewStart) / _viewSpan * width;
+    final inX = xOf(_handleFrame(fadeIn: true));
+    final outX = xOf(_handleFrame(fadeIn: false));
+    // Fade in's square sits right of its line, fade out's left of it.
+    final dIn = (p.dx - (inX + _handleSize / 2)).abs();
+    final dOut = (p.dx - (outX - _handleSize / 2)).abs();
+    const reach = _handleSize * 1.5;
+    if (dIn > reach && dOut > reach) return null;
+    return dIn <= dOut;
+  }
+
+  void _dragFade(bool fadeIn, double dx, double width) {
+    final r = _fadeRegion;
+    final x = (_viewStart + dx / width * _viewSpan).round();
+    final frames = (fadeIn ? x - r.from : r.to - x).clamp(0, r.to - r.from);
+    setState(() => _fadeDrag = (fadeIn: fadeIn, frames: frames));
+  }
+
+  /// Finger up: the dragged length becomes the fade (one undo step).
+  void _commitFade() {
+    final d = _fadeDrag;
+    if (d == null) return;
+    final r = _fadeRegion;
+    final frames = _toEdit(d.frames).clamp(0, r.b - r.a);
+    final next = d.fadeIn
+        ? _edits.fadeRegionIn(r.a, r.b, frames)
+        : _edits.fadeRegionOut(r.a, r.b, frames);
+    setState(() => _fadeDrag = null);
+    if (next.toJsonString() == _edits.toJsonString()) return;
+    _apply(
+      d.fadeIn ? 'Fade in' : 'Fade out',
+      next,
+      position: _toEdit(_position).clamp(0, next.length),
+      select: _hasFadeSelection ? (start: r.a, end: r.b) : null,
+    );
+  }
+
+  void _clearFades() {
+    final r = _toolRange;
+    _toolDone('Remove fades', _edits.clearFades(r.a, r.b), r);
+  }
+
+  /// Brings the loudest point of the selection (or take) to −1 dBFS.
+  Future<void> _normalize() async {
+    final r = _toolRange;
+    final before = _edits;
+    final active = _active;
+    setState(() => _busy = 'Measuring…');
+    double peak;
+    try {
+      peak = await peakOfClips(
+        active?.path ?? widget.take.wav.path,
+        clipsForRange(before, r.a, r.b, active),
+      );
+    } on Object catch (e) {
+      if (mounted) setState(() => _busy = null);
+      _say('Could not measure the level ($e).');
+      return;
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+    if (!mounted || !identical(before, _edits)) return; // edited meanwhile
+    if (peak < 1e-5) {
+      _say('Nothing to normalize: it is silent.');
+      return;
+    }
+    final factor = normalizeTarget / peak;
+    if ((factor - 1).abs() < 0.001) {
+      _say('Already at −1 dB.');
+      return;
+    }
+    _toolDone('Normalize', _edits.scaleGain(r.a, r.b, factor), r);
+    final db = 20 * math.log(factor) / math.ln10;
+    _say(
+      'Normalized to −1 dB (${db >= 0 ? '+' : ''}${db.toStringAsFixed(1)} dB).',
+    );
+  }
+
+  /// Trims silence at the start and end of the take (below [_silenceDb]).
+  void _trimSilence() {
+    final p = _peaks;
+    if (p == null) return;
+    final range = soundRange(p, _edits.length, dbToGain(_silenceDb));
+    if (range == null) {
+      _say('All of it is below ${_silenceDb.round()} dB.');
+      return;
+    }
+    final a = range.start == 0 ? 0 : _snap(range.start);
+    final b = range.end >= _edits.length ? _edits.length : _snap(range.end);
+    if (a <= 0 && b >= _edits.length) {
+      _say('No silence to trim at the ends.');
+      return;
+    }
+    final pos = (_toEdit(_position) - a).clamp(0, b - a);
+    final message =
+        'Trimmed ${_fmtSeconds(a)} from the start and '
+        '${_fmtSeconds(_edits.length - b)} from the end.';
+    _apply('Trim silence', _edits.trim(a, b), position: pos, zoomOut: true);
+    _say(message);
+  }
+
+  String _fmtSeconds(int editFrames) =>
+      '${(editFrames / sampleRate).toStringAsFixed(2)} s';
+
+  void _say(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  /// Whether what you hear is ready to export (no render pending).
+  bool get _canExport =>
+      _pending == null && (_edits.tune.isIdentity || _active != null);
+
+  Future<void> _export(Rect? origin) async {
+    final fmt = exportFormats[_exportFormat];
+    final sel = _snappedSelection;
+    final range = sel == null ? null : (start: sel.a, end: sel.b);
+    try {
+      setState(() => _busy = 'Exporting…');
+      final tmp = await getTemporaryDirectory();
+      final root = Directory('${tmp.path}/exports');
+      if (root.existsSync()) root.deleteSync(recursive: true); // old shares
+      final dir = Directory(
+        '${root.path}/${DateTime.now().millisecondsSinceEpoch}',
+      )..createSync(recursive: true);
+      final items = planExport(
+        kind: _exportKind,
+        edits: _edits,
+        render: _active,
+        source: _active?.path ?? widget.take.wav.path,
+        dir: dir.path,
+        base: _exportBase(),
+        range: range,
+      );
+      if (items.isEmpty) throw StateError('nothing to export');
+      await runExports(items, fmt.sampleRate, fmt.bits);
+      if (!mounted) return;
+      setState(() => _busy = null);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            for (final it in items) XFile(it.output, mimeType: 'audio/wav'),
+          ],
+          sharePositionOrigin: origin,
+        ),
+      );
+    } on Object catch (e) {
+      if (mounted) setState(() => _busy = null);
+      _say('Export failed ($e).');
+    }
+  }
+
+  /// File name base: "Pocket Studio 2026-11-14 0912".
+  String _exportBase() {
+    final c = widget.take.created;
+    String two(int v) => v.toString().padLeft(2, '0');
+    return 'Pocket Studio ${c.year}-${two(c.month)}-${two(c.day)} '
+        '${two(c.hour)}${two(c.minute)}${two(c.second)}';
+  }
+
   Future<void> _deleteTake() async {
     final ok = await showDialog<bool>(
       context: context,
@@ -782,6 +1049,7 @@ class _TakeScreenState extends State<TakeScreen> {
     final peaks = _peaks;
     final selColor = scheme.tertiary.withValues(alpha: _loopOn ? 0.35 : 0.18);
     final hasSelection = _selStart != null && _selAnchor == null;
+    final fadeDrag = _fadeDrag;
 
     double toView(num frame) => (frame - _viewStart) / _viewSpan;
     final joins = <int>[
@@ -809,9 +1077,16 @@ class _TakeScreenState extends State<TakeScreen> {
             onSelected: (v) => switch (v) {
               'revert' => _revert(),
               'bounce' => _bounceEdited(),
+              'export' => _openExportSheet(),
               _ => _deleteTake(),
             },
             itemBuilder: (_) => [
+              PopupMenuItem(
+                key: const Key('export'),
+                value: 'export',
+                enabled: _canExport && _busy == null,
+                child: const Text('Export samples…'),
+              ),
               PopupMenuItem(
                 value: 'bounce',
                 enabled: _pending == null,
@@ -876,50 +1151,75 @@ class _TakeScreenState extends State<TakeScreen> {
                             final w = box.maxWidth;
                             final bf = peaks.blockFrames;
                             final playhead = toView(_position);
-                            return GestureDetector(
-                              key: const Key('waveform'),
-                              behavior: HitTestBehavior.opaque,
-                              onTapUp: (d) {
-                                PocketAudio.seek(
-                                  _frameAt(d.localPosition.dx, w),
-                                );
-                                _tick();
-                              },
-                              onScaleStart: (d) => _onScaleStart(d, w),
-                              onScaleUpdate: (d) => _onScaleUpdate(d, w),
-                              onScaleEnd: _onScaleEnd,
-                              onLongPressStart: (d) => _onLongPressStart(d, w),
-                              onLongPressMoveUpdate: (d) =>
-                                  _onLongPressMove(d, w),
-                              onLongPressEnd: (_) => _onLongPressEnd(),
-                              child: ClipRect(
-                                child: CustomPaint(
-                                  painter: WaveformPainter(
-                                    minMax: peaks.minMax,
-                                    // Peaks are in edit frames.
-                                    firstBlock: (_viewStart * _tempo / bf)
-                                        .floor(),
-                                    blockCount: (_viewSpan * _tempo / bf)
-                                        .ceil(),
-                                    color: scheme.primary,
-                                    playhead: playhead >= 0 && playhead <= 1
-                                        ? playhead
-                                        : null,
-                                    playheadColor: _scrubbing
-                                        ? scheme.tertiary
-                                        : scheme.onSurface,
-                                    markers: [for (final j in joins) toView(j)],
-                                    markerColor: scheme.secondary,
-                                    bands: [
-                                      if (_selStart != null)
-                                        (
-                                          from: toView(_selStart!),
-                                          to: toView(_selEnd!),
-                                          color: selColor,
-                                        ),
-                                    ],
+                            return Listener(
+                              onPointerDown: (e) => _downAt = e.localPosition,
+                              child: GestureDetector(
+                                key: const Key('waveform'),
+                                behavior: HitTestBehavior.opaque,
+                                onTapUp: (d) {
+                                  // A tap on a fade handle isn't a seek.
+                                  if (_handleAt(d.localPosition, w) != null) {
+                                    return;
+                                  }
+                                  PocketAudio.seek(
+                                    _frameAt(d.localPosition.dx, w),
+                                  );
+                                  _tick();
+                                },
+                                onScaleStart: (d) => _onScaleStart(d, w),
+                                onScaleUpdate: (d) => _onScaleUpdate(d, w),
+                                onScaleEnd: _onScaleEnd,
+                                onLongPressStart: (d) =>
+                                    _onLongPressStart(d, w),
+                                onLongPressMoveUpdate: (d) =>
+                                    _onLongPressMove(d, w),
+                                onLongPressEnd: (_) => _onLongPressEnd(),
+                                child: ClipRect(
+                                  child: CustomPaint(
+                                    painter: WaveformPainter(
+                                      minMax: peaks.minMax,
+                                      // Peaks are in edit frames.
+                                      firstBlock: (_viewStart * _tempo / bf)
+                                          .floor(),
+                                      blockCount: (_viewSpan * _tempo / bf)
+                                          .ceil(),
+                                      color: scheme.primary,
+                                      playhead: playhead >= 0 && playhead <= 1
+                                          ? playhead
+                                          : null,
+                                      playheadColor: _scrubbing
+                                          ? scheme.tertiary
+                                          : scheme.onSurface,
+                                      markers: [
+                                        for (final j in joins) toView(j),
+                                      ],
+                                      markerColor: scheme.secondary,
+                                      fades: _edits.clips.isEmpty
+                                          ? null
+                                          : (
+                                              from: toView(_fadeRegion.from),
+                                              inEnd: toView(
+                                                _handleFrame(fadeIn: true),
+                                              ),
+                                              outStart: toView(
+                                                _handleFrame(fadeIn: false),
+                                              ),
+                                              to: toView(_fadeRegion.to),
+                                              active: fadeDrag?.fadeIn,
+                                            ),
+                                      fadeColor: scheme.tertiary,
+                                      handleSize: _handleSize,
+                                      bands: [
+                                        if (_selStart != null)
+                                          (
+                                            from: toView(_selStart!),
+                                            to: toView(_selEnd!),
+                                            color: selColor,
+                                          ),
+                                      ],
+                                    ),
+                                    child: const SizedBox.expand(),
                                   ),
-                                  child: const SizedBox.expand(),
                                 ),
                               ),
                             );
@@ -934,14 +1234,17 @@ class _TakeScreenState extends State<TakeScreen> {
               const SizedBox(height: 4),
               SizedBox(
                 height: 48,
-                child: hasSelection
+                child: fadeDrag != null
+                    ? _fadeLabel(theme, fadeDrag)
+                    : hasSelection
                     ? _selectionBar(theme)
                     : Center(
                         child: Text(
                           _scrubbing
                               ? 'Scrubbing'
                               : 'Drag to scrub · long-press + drag to select '
-                                    '· pinch to zoom',
+                                    '· pinch to zoom · drag a top corner '
+                                    'to fade',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodySmall,
                         ),
@@ -1007,7 +1310,15 @@ class _TakeScreenState extends State<TakeScreen> {
                     onHoldStart: () => _shuttle(_shuttleSpeed),
                     onHoldEnd: _endShuttle,
                   ),
-                  const SizedBox(width: 64),
+                  const SizedBox(width: 16),
+                  IconButton.outlined(
+                    key: const Key('tools'),
+                    tooltip: 'Sample tools',
+                    onPressed: _error == null && _busy == null
+                        ? _openToolsSheet
+                        : null,
+                    icon: const Icon(Icons.auto_fix_high),
+                  ),
                 ],
               ),
             ],
@@ -1031,9 +1342,16 @@ class _TakeScreenState extends State<TakeScreen> {
   static String _tempoLabel(Tune t) =>
       t.tempo == 1 ? 'Tempo' : '${(t.tempo * 100).round()}%';
 
+  static String _signed(num v) => '${v > 0 ? '+' : ''}${v.round()}';
+
+  static String _variLabel(Tune t) => t.varispeed == 0
+      ? 'Vari'
+      : '${_signed(t.varispeed)} st ×${t.speed.toStringAsFixed(2)}';
+
   Widget _tuneRow(ThemeData theme) {
     final t = _edits.tune;
     final status =
+        _busy ??
         _renderError ??
         (_pending != null
             ? 'Rendering… ${(_renderProgress * 100).round()}%'
@@ -1053,6 +1371,13 @@ class _TakeScreenState extends State<TakeScreen> {
           key: const Key('tempo'),
           avatar: const Icon(Icons.speed, size: 18),
           label: Text(_tempoLabel(t)),
+          onPressed: _openTuneSheet,
+        ),
+        const SizedBox(width: 8),
+        ActionChip(
+          key: const Key('varispeed'),
+          avatar: const Icon(Icons.album, size: 18),
+          label: Text(_variLabel(t)),
           onPressed: _openTuneSheet,
         ),
         const SizedBox(width: 12),
@@ -1163,8 +1488,8 @@ class _TakeScreenState extends State<TakeScreen> {
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Keep voice natural'),
                     subtitle: const Text(
-                      'Preserves formants. For voice; leave off for '
-                      'instruments and noise.',
+                      'Preserves formants under pitch and varispeed. For '
+                      'voice; leave off for instruments and noise.',
                     ),
                     value: t.formant,
                     onChanged: (v) => set(t.copyWith(formant: v), 'Formant'),
@@ -1192,6 +1517,49 @@ class _TakeScreenState extends State<TakeScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
+                  Text('Varispeed', style: theme.textTheme.titleMedium),
+                  Text(
+                    'Like tape: pitch and speed change together.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton.filledTonal(
+                        key: const Key('vari-down'),
+                        tooltip: 'Slower and lower',
+                        onPressed: t.varispeed > Tune.minVarispeed
+                            ? () => set(
+                                t.copyWith(varispeed: t.varispeed - 1),
+                                'Varispeed',
+                              )
+                            : null,
+                        icon: const Icon(Icons.remove),
+                      ),
+                      SizedBox(
+                        width: 160,
+                        child: Text(
+                          '${_signed(t.varispeed)} st  ×${t.speed.toStringAsFixed(2)}',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ),
+                      IconButton.filledTonal(
+                        key: const Key('vari-up'),
+                        tooltip: 'Faster and higher',
+                        onPressed: t.varispeed < Tune.maxVarispeed
+                            ? () => set(
+                                t.copyWith(varispeed: t.varispeed + 1),
+                                'Varispeed',
+                              )
+                            : null,
+                        icon: const Icon(Icons.add),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
                   Row(
                     children: [
                       Expanded(
@@ -1208,10 +1576,202 @@ class _TakeScreenState extends State<TakeScreen> {
                       TextButton(
                         onPressed: t == Tune.none
                             ? null
-                            : () => set(Tune.none, 'Reset pitch & tempo'),
+                            : () => set(
+                                Tune.none,
+                                'Reset pitch, tempo & varispeed',
+                              ),
                         child: const Text('Reset'),
                       ),
                     ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Reverse, fades, normalize, trim silence — on the selection, or the
+  /// whole take without one.
+  void _openToolsSheet() {
+    final r = _toolRange;
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          final theme = Theme.of(context);
+          void run(VoidCallback f) {
+            Navigator.pop(context);
+            f();
+          }
+
+          final scope = r.whole
+              ? 'Whole take'
+              : 'Selection ${_fmtPrecise(_toDisplay(r.a))} – '
+                    '${_fmtPrecise(_toDisplay(r.b))}';
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Sample tools', style: theme.textTheme.titleMedium),
+                  Text(scope, style: theme.textTheme.bodySmall),
+                  const SizedBox(height: 8),
+                  ListTile(
+                    key: const Key('tool-reverse'),
+                    leading: const Icon(Icons.swap_horiz),
+                    title: const Text('Reverse'),
+                    onTap: () => run(_reverse),
+                  ),
+                  if (_edits.hasFadeOver(r.a, r.b))
+                    ListTile(
+                      key: const Key('tool-clear-fades'),
+                      leading: const Icon(Icons.horizontal_rule),
+                      title: const Text('Remove fades'),
+                      onTap: () => run(_clearFades),
+                    ),
+                  ListTile(
+                    key: const Key('tool-normalize'),
+                    leading: const Icon(Icons.vertical_align_top),
+                    title: const Text('Normalize'),
+                    subtitle: const Text('Loudest point to −1 dB'),
+                    onTap: () => run(_normalize),
+                  ),
+                  ListTile(
+                    key: const Key('tool-trim-silence'),
+                    leading: const Icon(Icons.compress),
+                    title: const Text('Trim silence'),
+                    subtitle: Text(
+                      'Start and end of the take, below '
+                      '${_silenceDb.round()} dB',
+                    ),
+                    onTap: () => run(_trimSilence),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16),
+                    child: SegmentedButton<double>(
+                      key: const Key('silence-threshold'),
+                      segments: const [
+                        ButtonSegment(value: -60, label: Text('−60 dB')),
+                        ButtonSegment(value: -48, label: Text('−48 dB')),
+                        ButtonSegment(value: -36, label: Text('−36 dB')),
+                      ],
+                      selected: {_silenceDb},
+                      onSelectionChanged: (v) {
+                        setState(() => _silenceDb = v.single);
+                        setSheet(() {});
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// One-shot / loop / slices, format, then the share sheet.
+  void _openExportSheet() {
+    final hasSel = _snappedSelection != null;
+    if (_exportKind == ExportKind.slices && _edits.clips.length < 2) {
+      _exportKind = ExportKind.oneShot;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          final theme = Theme.of(context);
+          final what = switch (_exportKind) {
+            ExportKind.oneShot =>
+              hasSel
+                  ? 'The selection as one file.'
+                  : 'The whole take as one file.',
+            ExportKind.loop =>
+              '${hasSel ? 'The selection' : 'The whole take'} as a seamless '
+                  'loop, marked for samplers to loop.',
+            ExportKind.slices =>
+              'One file per clip (your split points)'
+                  '${hasSel ? ' within the selection' : ''}.',
+          };
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Export samples', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  SegmentedButton<ExportKind>(
+                    key: const Key('export-kind'),
+                    segments: [
+                      const ButtonSegment(
+                        value: ExportKind.oneShot,
+                        label: Text('One-shot'),
+                      ),
+                      const ButtonSegment(
+                        value: ExportKind.loop,
+                        label: Text('Loop'),
+                      ),
+                      ButtonSegment(
+                        value: ExportKind.slices,
+                        label: const Text('Slices'),
+                        enabled: _edits.clips.length > 1,
+                      ),
+                    ],
+                    selected: {_exportKind},
+                    onSelectionChanged: (v) {
+                      setState(() => _exportKind = v.single);
+                      setSheet(() {});
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Text(what, style: theme.textTheme.bodySmall),
+                  const SizedBox(height: 16),
+                  Text('Format', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  RadioGroup<int>(
+                    groupValue: _exportFormat,
+                    onChanged: (v) {
+                      setState(() => _exportFormat = v ?? 0);
+                      setSheet(() {});
+                    },
+                    child: Column(
+                      children: [
+                        for (var i = 0; i < exportFormats.length; i++)
+                          RadioListTile<int>(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            value: i,
+                            title: Text(exportFormats[i].label),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Builder(
+                    builder: (context) => FilledButton.icon(
+                      key: const Key('export-share'),
+                      icon: const Icon(Icons.ios_share),
+                      label: const Text('Export & share'),
+                      onPressed: () {
+                        final box = context.findRenderObject() as RenderBox?;
+                        final origin = box == null
+                            ? null
+                            : box.localToGlobal(Offset.zero) & box.size;
+                        Navigator.pop(context);
+                        _export(origin);
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -1315,13 +1875,30 @@ class _TakeScreenState extends State<TakeScreen> {
                     border: Border.all(color: scheme.outlineVariant),
                   ),
                   child: Text(
-                    '${i + 1}',
+                    // ⇄ marks a reversed clip.
+                    '${i + 1}${clips[i].reverse ? ' ⇄' : ''}',
                     style: TextStyle(color: scheme.onSurfaceVariant),
                   ),
                 ),
               ),
             );
           },
+        ),
+      ),
+    );
+  }
+
+  /// While a fade handle is dragged: its length.
+  Widget _fadeLabel(ThemeData theme, ({bool fadeIn, int frames}) d) {
+    final secs = d.frames / sampleRate;
+    return Center(
+      key: const Key('fade-label'),
+      child: Text(
+        '${d.fadeIn ? 'Fade in' : 'Fade out'} · '
+        '${secs.toStringAsFixed(2)} s'
+        '${d.frames == 0 ? ' (none)' : ''}',
+        style: theme.textTheme.bodyMedium?.copyWith(
+          fontFeatures: const [FontFeature.tabularFigures()],
         ),
       ),
     );

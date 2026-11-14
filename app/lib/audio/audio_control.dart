@@ -53,6 +53,28 @@ abstract final class AudioControl {
 
   static void release() => PocketAudio.stop();
 
+  // ---- who owns the player ----
+  // A screen's dispose() runs after its exit transition (~300 ms), but the
+  // screen underneath resumes as soon as the pop starts — so a closing take
+  // editor used to close the player and stop the engine right after the
+  // stack below had reopened them (human, 2026-11-14: "add an edited take to
+  // a stack… error… exit and back in works"). Screens that open the player
+  // claim it; on dispose they tear down only what they still own.
+  static int _playerOwner = 0;
+
+  /// Claims the player for the calling screen; returns its token.
+  static int claimPlayer() => ++_playerOwner;
+
+  /// Whether [token] still owns the player (no screen claimed it since).
+  static bool ownsPlayer(int token) => token == _playerOwner;
+
+  /// Closes the player and stops the engine, if [token] still owns them.
+  static void releasePlayer(int token) {
+    if (!ownsPlayer(token)) return;
+    PocketAudio.closeTake();
+    release();
+  }
+
   /// Makes sure playback audio is really flowing, e.g. when play is
   /// pressed or the app comes back. "Running" is not enough: when another
   /// app interrupts our audio, iOS stops it and does not always say when the

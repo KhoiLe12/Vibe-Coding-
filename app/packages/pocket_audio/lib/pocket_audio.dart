@@ -26,6 +26,131 @@ class PocketAudioException implements Exception {
   String toString() => 'PocketAudioException($code): $message';
 }
 
+/// Fades of a clip (M7), in the clip's own frames in timeline order: silent
+/// before [inA], fading in to full at [inB]; full until [outA], silent from
+/// [outB]. A ramp whose B <= A is off. Positions may lie outside the clip (a
+/// split leaves each piece its share of the same curve).
+class Fades {
+  const Fades({this.inA = 0, this.inB = 0, this.outA = 0, this.outB = 0});
+
+  static const none = Fades();
+
+  final double inA, inB, outA, outB;
+
+  bool get hasIn => inB > inA;
+  bool get hasOut => outB > outA;
+  bool get any => hasIn || hasOut;
+
+  /// The same curves seen from [k] frames later (the second piece of a
+  /// split at k).
+  /// Ramps that are off stay at 0, so a clip without fades splits into
+  /// clips without fades.
+  Fades shift(int k) => Fades(
+    inA: hasIn ? inA - k : 0,
+    inB: hasIn ? inB - k : 0,
+    outA: hasOut ? outA - k : 0,
+    outB: hasOut ? outB - k : 0,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is Fades &&
+      other.inA == inA &&
+      other.inB == inB &&
+      other.outA == outA &&
+      other.outB == outB;
+
+  @override
+  int get hashCode => Object.hash(inA, inB, outA, outB);
+
+  @override
+  String toString() =>
+      'Fades(${hasIn ? 'in $inA→$inB' : ''}${hasOut ? ' out $outA→$outB' : ''})';
+}
+
+/// One clip as the engine plays it: frames [start, end) of a source, with
+/// [gain], played backwards if [reverse], with [fades] (M7).
+class PlayClip {
+  const PlayClip(
+    this.start,
+    this.end, {
+    this.gain = 1.0,
+    this.reverse = false,
+    this.fades = Fades.none,
+  });
+
+  final int start, end;
+  final double gain;
+  final bool reverse;
+  final Fades fades;
+
+  int get length => end - start;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlayClip &&
+      other.start == start &&
+      other.end == end &&
+      other.gain == gain &&
+      other.reverse == reverse &&
+      other.fades == fades;
+
+  @override
+  int get hashCode => Object.hash(start, end, gain, reverse, fades);
+
+  @override
+  String toString() =>
+      'PlayClip($start–$end${gain == 1 ? '' : ' ×$gain'}'
+      '${reverse ? ' reversed' : ''}${fades.any ? ' $fades' : ''})';
+}
+
+/// Clips copied into native arrays for one call; free with [free].
+class _NativeClips {
+  _NativeClips(List<PlayClip> clips) : n = clips.length {
+    final m = math.max(1, n);
+    starts = calloc<ffi.Int64>(m);
+    ends = calloc<ffi.Int64>(m);
+    gains = calloc<ffi.Float>(m);
+    fades = calloc<ffi.Double>(4 * m);
+    reverse = calloc<ffi.Uint8>(m);
+    for (var i = 0; i < n; i++) {
+      final c = clips[i];
+      starts[i] = c.start;
+      ends[i] = c.end;
+      gains[i] = c.gain;
+      fades[4 * i] = c.fades.inA;
+      fades[4 * i + 1] = c.fades.inB;
+      fades[4 * i + 2] = c.fades.outA;
+      fades[4 * i + 3] = c.fades.outB;
+      reverse[i] = c.reverse ? 1 : 0;
+    }
+  }
+
+  final int n;
+  late final ffi.Pointer<ffi.Int64> starts, ends;
+  late final ffi.Pointer<ffi.Float> gains;
+  late final ffi.Pointer<ffi.Double> fades;
+  late final ffi.Pointer<ffi.Uint8> reverse;
+
+  void free() {
+    calloc.free(starts);
+    calloc.free(ends);
+    calloc.free(gains);
+    calloc.free(fades);
+    calloc.free(reverse);
+  }
+}
+
+/// Export bit depth (M7).
+enum ExportBits {
+  pcm16(16),
+  pcm24(24),
+  float32(32);
+
+  const ExportBits(this.bits);
+  final int bits;
+}
+
 /// Microphone permission state.
 enum MicPermission { undetermined, granted, denied }
 
@@ -259,34 +384,29 @@ abstract final class PocketAudio {
   static int get playbackPosition => bindings.ps_player_position();
   static int get takeLength => bindings.ps_player_length();
 
-  /// Replaces the edit list with clips `(start, end, gain)` over the open
-  /// take's recording — or, with [source], over another mono float WAV such
-  /// as a transposed render of it (M4). Empty = the whole source. Returns the
-  /// timeline length; throws if [source] can't be opened.
-  static int setClips(
-    List<({int start, int end, double gain})> clips, {
-    String? source,
-  }) {
-    final n = clips.length;
-    final s = calloc<ffi.Int64>(math.max(1, n));
-    final e = calloc<ffi.Int64>(math.max(1, n));
-    final g = calloc<ffi.Float>(math.max(1, n));
+  /// Replaces the edit list with [clips] over the open take's recording —
+  /// or, with [source], over another mono float WAV such as a transposed
+  /// render of it (M4). Empty = the whole source. Returns the timeline
+  /// length; throws if [source] can't be opened.
+  static int setClips(List<PlayClip> clips, {String? source}) {
+    final c = _NativeClips(clips);
     final path = (source ?? '').toNativeUtf8();
     try {
-      for (var i = 0; i < n; i++) {
-        s[i] = clips[i].start;
-        e[i] = clips[i].end;
-        g[i] = clips[i].gain;
-      }
-      final len = bindings.ps_player_set_source_clips(path.cast(), s, e, g, n);
+      final len = bindings.ps_player_set_source_clips_fx(
+        path.cast(),
+        c.starts,
+        c.ends,
+        c.gains,
+        c.fades,
+        c.reverse,
+        c.n,
+      );
       if (len < 0) {
         throw PocketAudioException(len, 'could not open $source for playback');
       }
       return len;
     } finally {
-      calloc.free(s);
-      calloc.free(e);
-      calloc.free(g);
+      c.free();
       calloc.free(path);
     }
   }
@@ -390,7 +510,8 @@ abstract final class PocketAudio {
   // ---- DSP processor (M4) ----
 
   /// Starts rendering frames [start, end) of [input] into [output],
-  /// transposed by [semitones] (fractional = cents) at [tempo] speed.
+  /// transposed by [semitones] (fractional = cents) at [tempo] speed, then
+  /// varispeed by [speed] (tape-style, pitch moves with it; M7).
   /// Cancels any running render. Returns the job id.
   static int startRender({
     required String input,
@@ -400,10 +521,11 @@ abstract final class PocketAudio {
     double semitones = 0,
     double tempo = 1,
     bool formant = false,
+    double speed = 1,
   }) {
     final i = input.toNativeUtf8(), o = output.toNativeUtf8();
     try {
-      return bindings.ps_render_start(
+      return bindings.ps_render_start_ex(
         i.cast(),
         start,
         end,
@@ -411,6 +533,7 @@ abstract final class PocketAudio {
         semitones,
         tempo,
         formant ? 1 : 0,
+        speed,
       );
     } finally {
       calloc.free(i);
@@ -437,34 +560,26 @@ abstract final class PocketAudio {
   /// [StackTrack.path] from [StackTrack.offset]. Returns the stack length.
   static int setStack(List<StackTrack> tracks) {
     final n = tracks.length;
-    final clipTotal = tracks.fold<int>(0, (s, t) => s + t.clips.length);
     final paths = calloc<ffi.Pointer<ffi.Char>>(math.max(1, n));
     final offsets = calloc<ffi.Int64>(math.max(1, n));
     final counts = calloc<ffi.Int32>(math.max(1, n));
-    final starts = calloc<ffi.Int64>(math.max(1, clipTotal));
-    final ends = calloc<ffi.Int64>(math.max(1, clipTotal));
-    final gains = calloc<ffi.Float>(math.max(1, clipTotal));
+    final c = _NativeClips([for (final t in tracks) ...t.clips]);
     try {
-      var at = 0;
       for (var k = 0; k < n; k++) {
         paths[k] = tracks[k].path.toNativeUtf8().cast();
         offsets[k] = tracks[k].offset;
         counts[k] = tracks[k].clips.length;
-        for (final c in tracks[k].clips) {
-          starts[at] = c.start;
-          ends[at] = c.end;
-          gains[at] = c.gain;
-          at++;
-        }
       }
-      final len = bindings.ps_player_set_stack(
+      final len = bindings.ps_player_set_stack_fx(
         n,
         paths.cast(),
         offsets,
         counts,
-        starts,
-        ends,
-        gains,
+        c.starts,
+        c.ends,
+        c.gains,
+        c.fades,
+        c.reverse,
       );
       if (len < 0) {
         throw PocketAudioException(len, 'could not open a layer for playback');
@@ -477,9 +592,7 @@ abstract final class PocketAudio {
       calloc.free(paths);
       calloc.free(offsets);
       calloc.free(counts);
-      calloc.free(starts);
-      calloc.free(ends);
-      calloc.free(gains);
+      c.free();
     }
   }
 
@@ -495,6 +608,71 @@ abstract final class PocketAudio {
         throw PocketAudioException(bindings.PS_ERROR_FILE, 'bounce failed');
       }
     } finally {
+      calloc.free(p);
+    }
+  }
+
+  // ---- Sampling tools (M7) ----
+
+  /// Renders [clips] of [source] (empty = all of it) into a mono WAV at
+  /// [output] at [sampleRate] (48000 or 44100) and [bits]. [loopFrames] > 0
+  /// exports the first [loopFrames] as a seamless loop (see ps_export_wav).
+  /// Blocking: call from a background isolate. Throws on failure.
+  static void exportWav({
+    required String source,
+    required List<PlayClip> clips,
+    required String output,
+    int sampleRate = 48000,
+    ExportBits bits = ExportBits.pcm24,
+    int loopFrames = 0,
+  }) {
+    final c = _NativeClips(clips);
+    final s = source.toNativeUtf8(), o = output.toNativeUtf8();
+    try {
+      final r = bindings.ps_export_wav(
+        s.cast(),
+        c.starts,
+        c.ends,
+        c.gains,
+        c.fades,
+        c.reverse,
+        c.n,
+        o.cast(),
+        sampleRate,
+        bits.bits,
+        loopFrames,
+      );
+      if (r != bindings.PS_OK) {
+        throw PocketAudioException(r, 'could not export $output');
+      }
+    } finally {
+      c.free();
+      calloc.free(s);
+      calloc.free(o);
+    }
+  }
+
+  /// Largest absolute sample in [ranges] of the mono float WAV at [path].
+  /// Blocking (reads the audio): call from a background isolate for long
+  /// ranges. Throws if the file can't be read.
+  static double peak(String path, List<({int start, int end})> ranges) {
+    final n = ranges.length;
+    final s = calloc<ffi.Int64>(math.max(1, n));
+    final e = calloc<ffi.Int64>(math.max(1, n));
+    final p = path.toNativeUtf8();
+    try {
+      for (var i = 0; i < n; i++) {
+        s[i] = ranges[i].start;
+        e[i] = ranges[i].end;
+      }
+      final v = bindings.ps_peak(p.cast(), s, e, n);
+      if (v < 0) {
+        throw PocketAudioException(bindings.PS_ERROR_FILE, 'cannot read $path');
+      }
+      return v;
+    } finally {
+      calloc.free(s);
+      calloc.free(e);
       calloc.free(p);
     }
   }
@@ -525,7 +703,7 @@ class StackTrack {
 
   final String path;
   final int offset;
-  final List<({int start, int end, double gain})> clips;
+  final List<PlayClip> clips;
 }
 
 /// State of the latest render (matches PS_RENDER_*).

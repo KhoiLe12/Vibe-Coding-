@@ -170,7 +170,7 @@ class TakeStore {
           e = EditList([
             for (final c in e.clips)
               if (c.start < recordingFrames)
-                Clip(c.start, math.min(c.end, recordingFrames), gain: c.gain),
+                c.copyWith(end: math.min(c.end, recordingFrames)),
           ], tune: e.tune);
         }
         // Ignore a list pointing past the recording (damaged file).
@@ -351,10 +351,12 @@ Peaks timelinePeaks(Peaks source, EditList edits) {
   for (final c in edits.clips) {
     final clipEnd = clipStart + c.length;
     for (; k < blocks && k * bf < clipEnd; k++) {
-      final src = c.start + (k * bf - clipStart);
+      final o = k * bf - clipStart;
+      final src = c.sourceAt(o);
       final b = (src ~/ bf).clamp(0, source.blocks - 1);
-      out[2 * k] = source.minMax[2 * b] * c.gain;
-      out[2 * k + 1] = source.minMax[2 * b + 1] * c.gain;
+      final g = c.hasFade ? c.gainAt(o + bf ~/ 2) : c.gain;
+      out[2 * k] = source.minMax[2 * b] * g;
+      out[2 * k + 1] = source.minMax[2 * b + 1] * g;
     }
     clipStart = clipEnd;
   }

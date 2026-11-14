@@ -98,7 +98,7 @@ void main() {
       PocketAudio.endRecording(peaksPath: t.peaks);
       PocketAudio.openStack();
       PocketAudio.setStack([
-        StackTrack(t.wav, 0, const [(start: 0, end: 4800, gain: 1.0)]),
+        StackTrack(t.wav, 0, const [PlayClip(0, 4800, gain: 1.0)]),
       ]);
       final out = '${dir.path}/mix.wav';
       await bounceStackInBackground(out);

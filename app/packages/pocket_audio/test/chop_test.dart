@@ -68,8 +68,8 @@ void main() {
     double ramp(int i) => i / 1e6;
     openTake(sr, ramp);
     final len = PocketAudio.setClips([
-      (start: 30000, end: 40000, gain: 1.0),
-      (start: 0, end: 10000, gain: 1.0),
+      PlayClip(30000, 40000, gain: 1.0),
+      PlayClip(0, 10000, gain: 1.0),
     ]);
     expect(len, 20000);
     expect(PocketAudio.takeLength, 20000);
@@ -92,10 +92,10 @@ void main() {
       // Cut points at peaks (worst case: full-scale jump without a crossfade).
       final peak = sr ~/ 440 ~/ 4; // quarter period → sine peak
       PocketAudio.setClips([
-        (start: 0, end: 10000 + peak, gain: 1.0),
-        (start: 40000 + 3 * peak, end: 70000, gain: 0.8), // jumps peak → trough
-        (start: 5000, end: 20000 + peak, gain: 1.0),
-        (start: 100000, end: 110000, gain: 0.5),
+        PlayClip(0, 10000 + peak, gain: 1.0),
+        PlayClip(40000 + 3 * peak, 70000, gain: 0.8), // jumps peak → trough
+        PlayClip(5000, 20000 + peak, gain: 1.0),
+        PlayClip(100000, 110000, gain: 0.5),
       ]);
       PocketAudio.seek(0);
       PocketAudio.playing = true;
@@ -115,8 +115,8 @@ void main() {
     double ramp(int i) => i / 1e6;
     openTake(sr, ramp);
     PocketAudio.setClips([
-      (start: 0, end: 20000, gain: 1.0),
-      (start: 20000, end: 30000, gain: 1.0), // a split, nothing removed
+      PlayClip(0, 20000, gain: 1.0),
+      PlayClip(20000, 30000, gain: 1.0), // a split, nothing removed
     ]);
     PocketAudio.playing = true;
     final out = renderAll(30000);
@@ -128,8 +128,8 @@ void main() {
   test('loops, seeks and scrub work in timeline frames', () {
     openTake(sr * 2, sine);
     PocketAudio.setClips([
-      (start: 60000, end: 80000, gain: 1.0),
-      (start: 0, end: 20000, gain: 1.0),
+      PlayClip(60000, 80000, gain: 1.0),
+      PlayClip(0, 20000, gain: 1.0),
     ]);
     PocketAudio.setLoop(15000, 25000); // spans the join
     PocketAudio.seek(15000);
@@ -143,7 +143,7 @@ void main() {
     openTake(sr, sine);
     PocketAudio.setLoop(30000, 40000);
     PocketAudio.seek(45000);
-    PocketAudio.setClips([(start: 0, end: 10000, gain: 1.0)]);
+    PocketAudio.setClips([PlayClip(0, 10000, gain: 1.0)]);
     expect(PocketAudio.loop, isNull);
     expect(PocketAudio.playbackPosition, lessThanOrEqualTo(10000));
     // Empty list = whole recording again (revert).

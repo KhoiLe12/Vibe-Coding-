@@ -36,6 +36,18 @@ struct RenderJob {
   double semitones = 0; // pitch shift (fractional = cents)
   double tempo = 1;     // speed factor; output length = length / tempo
   bool formant = false; // preserve formants (voice)
+  // Varispeed (M7, wiki/concepts/varispeed.md): tape-style speed factor
+  // applied after pitch/tempo by resampling, so pitch moves with it
+  // (2 = an octave up, twice as fast). Output length =
+  // round(round(length / tempo) / speed).
+  double speed = 1;
+
+  // Whether the Signalsmith pass is needed: pitch or tempo, or keeping
+  // formants under varispeed (the pass pre-shifts them by 1 / speed so the
+  // resampling puts them back where they were).
+  bool stretches() const {
+    return semitones != 0 || tempo != 1 || (formant && speed != 1);
+  }
 };
 
 class DspProcessor {
@@ -57,6 +69,18 @@ class DspProcessor {
 
  private:
   void joinWorker();
+  // Signalsmith pass: [start, end) of input → output (via output.tmp).
+  static RenderState stretch(const RenderJob& job, const std::string& output,
+                             const std::atomic<bool>& cancelled,
+                             std::atomic<double>* progress, double p0,
+                             double p1);
+  // Varispeed pass: [start, end) of input → output, resampled by speed.
+  static RenderState varispeed(const std::string& input, int64_t start,
+                               int64_t end, double speed,
+                               const std::string& output,
+                               const std::atomic<bool>& cancelled,
+                               std::atomic<double>* progress, double p0,
+                               double p1);
 
   std::thread worker_;
   std::atomic<bool> cancel_{false};

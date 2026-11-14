@@ -5,12 +5,15 @@
 // (wiki/decisions/d013-transpose-tempo-design.md, wiki/components/storage.md).
 // A render covers a range of the recording at one Tune; clips that fall
 // inside that range play from it, so chopping needs no re-render. Files:
-//   renders/<take>__<cents>_<tempo‰>_<f>_<start>_<end>.wav
-// (double underscore: take ids may themselves end in "_2")
+//   renders/<take>__<cents>_<tempo‰>_<f>[v<varispeed cents>]_<start>_<end>.wav
+// (double underscore: take ids may themselves end in "_2"; the v part only
+// when varispeed is set, M7, so M4 renders keep their names)
 // The folder is a disposable cache with a size cap.
 
 import 'dart:io';
 import 'dart:math' as math;
+
+import 'package:pocket_audio/pocket_audio.dart' show PlayClip;
 
 import 'edit_list.dart';
 
@@ -32,14 +35,13 @@ class Render {
 
   bool covers(int a, int b) => start <= a && b <= end;
 
+  /// Recording frame → this render's frame.
+  int map(int recordingFrame) =>
+      ((recordingFrame - start) / tune.timeRatio).round();
+
   /// Clips mapped from recording frames into this render's frames.
-  List<({int start, int end, double gain})> clipsFor(EditList e) => [
-    for (final c in e.clips)
-      (
-        start: ((c.start - start) / tune.tempo).round(),
-        end: ((c.end - start) / tune.tempo).round(),
-        gain: c.gain,
-      ),
+  List<PlayClip> clipsFor(EditList e) => [
+    for (final c in e.clips) c.toPlay(map, 1 / tune.timeRatio),
   ];
 }
 
@@ -66,7 +68,8 @@ class RenderCache {
 
   static String _tuneKey(Tune t) =>
       '${(t.semitones * 100).round()}_${(t.tempo * 1000).round()}_'
-      '${t.formant ? 1 : 0}';
+      '${t.formant ? 1 : 0}'
+      '${t.varispeed != 0 ? 'v${(t.varispeed * 100).round()}' : ''}';
 
   /// Where a render of [start, end) at [tune] lives.
   Render planFor(String takeId, Tune tune, int start, int end) => Render(

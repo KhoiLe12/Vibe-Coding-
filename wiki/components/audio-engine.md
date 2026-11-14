@@ -1,9 +1,9 @@
 ---
 type: component
 status: active
-updated: 2026-11-13
+updated: 2026-11-14
 sources: [raw/plan/pocket-studio-plan.md]
-tags: [cpp, realtime, m0, m1]
+tags: [cpp, realtime, m0, m1, m2, m3, m4, m5, m6, m7]
 ---
 # Audio engine
 
@@ -12,7 +12,7 @@ Owns the device, the record tap, playback of the rendered edit list, and the tra
 
 **M0 state:** one playback device (48 kHz, stereo, f32, low-latency profile) playing a test sine ("hello tone").
 
-**M1 state (in progress):** engine runs output-only or full duplex (mic + output); recorder and player done and host-tested; real-mic recording verified on the macOS host; awaiting iPhone verification.
+**M1 state (done on iOS 2026-11-13):** engine runs output-only or full duplex (mic + output); recorder and player verified on the iPhone 16 Pro Max ([[record]]).
 - *Modes:* `ps_engine_start_ex(1)` opens one duplex device (mono f32 capture → input stage/recorder; stereo f32 output). The app opens the mic only on the Record screen (and closes it when the app is hidden while not recording), so the OS recording indicator is honest.
 - *iOS session* is owned by `platform_apple.mm`, not miniaudio: PlayAndRecord + **measurement mode** (no voice processing, [[recording-diverse-material]]) + DefaultToSpeaker + AllowBluetoothA2DP; Playback when output-only. Mic permission via AVAudioApplication (iOS 17+) / AVAudioSession. Background recording via `UIBackgroundModes: audio`.
 - *Interruptions* (calls, Siri, other apps): Core Audio stops the device; on interruption-ended the engine reactivates the session and restarts it. **iOS doesn't always send interruption-ended** (found 2026-11-14 when switching apps), so the app also checks liveness before playing and on resume: if `callbackCount` doesn't move within ~80 ms it restarts the engine (`AudioControl.ensureOutput`). A take in progress keeps going with a gap; the Record screen tells the user.
@@ -21,7 +21,9 @@ Owns the device, the record tap, playback of the rendered edit list, and the tra
 - *Timeline (M3, [[d012-chop-model]]):* the player plays an edit list as one timeline: each frame maps to a clip (binary search) and then a recording frame; joins are 10 ms equal-power crossfades (outgoing clip runs 5 ms past its end, incoming starts 5 ms early); adjacent pieces of the recording (a plain split) join with no crossfade. New lists swap in through an atomic pointer; the old one is freed only after the audio thread is seen outside `render`. All positions, loops and scrub are timeline frames; prefetch maps them back to the source.
 - *Looper (M5a, [[d014-looper-m5a]]):* runs in the same duplex callback. Commands go through a lock-free SPSC queue; a service thread prepares zeroed, length-tagged layer buffers (the audio thread retires any made for an older loop length, so it can never write past one) and frees retired ones. First take → 10 ms seam tail crossfaded into the head; overdubs written at *p − L*, one layer per pass, recording continues *L* frames after punch-out, 5 ms punch fades; per-layer gains ramped over 5 ms (undo/redo/mute/solo/volume). Max 60 s loop, 32 layers.
 - *Tracks (M6, [[layers]]):* a timeline is a set of tracks (clip list + source + offset) mixed at per-track volumes smoothed over 5 ms; a take is one track at offset 0 (unchanged behaviour); a stack fades each track in/out over 5 ms at its ends and prefetches every track. `ps_engine_process_offline` runs one whole callback (recorder → player → looper → probe) for tests; the recorder keeps the player position of a take's first callback (`ps_recorder_start_stamp`).
+- *Sampling tools (M7, [[d016-sampling-tools]]):* a clip can play **backwards** (`srcIndex(k) = srcEnd − 1 − k`; join crossfades keep running in the clip's direction) and carry **fades** (`Fades { inA, inB, outA, outB }` in clip frames, sin² curve, applied per sample with the gain). A join gets no crossfade when the clips are contiguous in the same direction and the gain doesn't step (< 0.1 %) — a plain split, or a fade ending at the join; crossfading audio with itself would only bump the level. **Export** (`exporter.cpp`) builds a track from clip specs and plays it with the same `trackAt` as playback, writes 16/24-bit PCM or 32-bit float WAV, resamples to 44.1 kHz, and for loops crossfades the 10 ms that followed the loop into its head (or 2 ms edge fades) and adds a `smpl` loop chunk. `resampler.h` is the windowed-sinc resampler shared with varispeed ([[dsp-processor]]).
 - *Sources (M4):* each timeline owns its source (`MappedWav`, shared): the recording or a transposed/stretched render. Swapping to a render is the same atomic timeline swap as an edit; a mapping is released when the last timeline using it is freed.
+- *Player ownership (app):* a screen's `dispose()` runs after its exit transition, but the screen below resumes as soon as the pop starts. Screens that open the player claim it (`AudioControl.claimPlayer()`) and on dispose close it only if they still own it (`releasePlayer`). Without this, leaving the take editor closed the stack's freshly reopened player and stopped the engine (human, 2026-11-14: a layer showed an error until the stack was reopened; `app/test/stack_add_edited_test.dart`).
 - *Input stage* (audio thread): smoothed input gain (~5 ms one-pole, snaps to target within 0.01% so unity stays bit-exact), peak level meter, sticky clip flag. Runs on every input buffer, recording or not.
 - *Recorder:* while a take is recording and not paused, the audio thread copies post-gain samples into a lock-free SPSC ring (2^19 floats ≈ 10.9 s). A writer thread drains it every 10 ms into a mono 32-bit float WAV ([[d007-recording-format]]), builds min/max peaks per 256 frames ([[waveform-rendering]]) and patches the WAV header after each new second of audio, so a crash loses at most ~1 s. Ring overflow is counted as dropped frames (target: 0).
 - *Peaks file* (`peaks/*.bin`, [[storage]]): `"PSPK"` · u32 version 1 · u32 block frames (256) · u32 block count · count × (f32 min, f32 max), little-endian.
@@ -48,11 +50,13 @@ C API in `app/packages/pocket_audio/src/pocket_audio.h`, wrapped by the Dart cla
 | `ps_mic_permission` / `ps_mic_request_permission` | `micPermission`, `requestMicPermission()` | `PS_MIC_UNDETERMINED/GRANTED/DENIED`; Android reports granted (shell asks) |
 | `ps_player_open/close/set_playing/is_playing/finished/seek/position/length` | `openTake()`, `closeTake()`, `playing`, `isPlaying`, `playbackFinished`, `seek()`, `playbackPosition`, `takeLength` | one take at a time |
 | `ps_player_set_clips(starts, ends, gains, n)` | `setClips()` | edit list → timeline; n = 0 = whole recording ([[d012-chop-model]]) |
-| `ps_player_set_source_clips(path, …)` | `setClips(clips, source:)` | clips index into another WAV (a render, M4); NULL = the recording |
+| `ps_player_set_source_clips(path, …)` / `ps_player_set_source_clips_fx(…, fades, reverse, n)` | `setClips(List<PlayClip>, source:)` | clips index into another WAV (a render, M4); NULL = the recording; `_fx` adds fades + reverse (M7) |
+| `ps_export_wav(src, clips…, out, rate, bits, loop_frames)` | `exportWav()` | M7 export; blocking, run on an isolate |
+| `ps_peak(path, starts, ends, n)` | `peak()` | M7 normalize; blocking |
 | `ps_player_zero_crossing(src, radius)` | `zeroCrossing()` | snap cuts (always on the recording) |
 | `ps_render_*` | `startRender()`, `renderState`, … | offline pitch/time, see [[dsp-processor]] |
 | `ps_looper_*` (enable, press, stop, play, clear, undo, redo, set_latency, set_layer_gain, state, length, position, layers, redoable, starved, bounce) | `Looper.*` | loop pedal, [[d014-looper-m5a]] |
-| `ps_player_open_stack` / `set_stack` / `set_track_gain` / `bounce`, `ps_recorder_start_stamp`, `ps_engine_process_offline` | `openStack()`, `setStack()`, `setTrackGain()`, `bounceMix()`, `recorderStartStamp`, `processEngineOffline()` | layers, [[layers]] |
+| `ps_player_open_stack` / `set_stack` (+ `_fx`) / `set_track_gain` / `bounce`, `ps_recorder_start_stamp`, `ps_engine_process_offline` | `openStack()`, `setStack()`, `setTrackGain()`, `bounceMix()`, `recorderStartStamp`, `processEngineOffline()` | layers, [[layers]] |
 | `ps_output_route` | `PocketAudio.outputRoute` | iOS output port type, e.g. "Speaker"; calibration key |
 | `ps_player_set_loop` / `loop_start` / `loop_end` | `setLoop()`, `clearLoop()`, `loop` | end exclusive; < 10 ms clears |
 | `ps_player_begin_scrub` / `set_scrub_target` / `set_shuttle` / `end_scrub` / `is_scrubbing` | `beginScrub()`, `scrubTarget`, `shuttle`, `endScrub()`, `isScrubbing` | tape-style; end resumes play if it was playing |
@@ -73,6 +77,8 @@ Threading: control calls take a mutex that the audio callback never touches; the
 - `app/packages/pocket_audio/src/recorder.h` / `recorder.cpp` — input stage, recorder, writer thread, peaks
 - `app/packages/pocket_audio/src/player.h` / `player.cpp` — memory-mapped take player (play, seek, loop, scrub, shuttle), WAV probe, peaks rebuild
 - `app/packages/pocket_audio/src/latency_probe.h` / `latency_probe.cpp` — chirp round-trip probe (M2 gate)
+- `app/packages/pocket_audio/src/exporter.h` / `exporter.cpp` — sample export (PCM writer, loop seam, smpl chunk) and peak scan (M7)
+- `app/packages/pocket_audio/src/resampler.h` — windowed-sinc resampler (varispeed, 44.1 kHz export)
 - `app/lib/screens/latency_screen.dart` — Latency test screen (quick 15 s / full 10 min)
 - `app/packages/pocket_audio/src/platform.h`, `platform_apple.mm`, `platform_other.cpp` — iOS audio session + mic permission; no-ops elsewhere
 - `app/lib/audio/audio_control.dart` — engine mode, mic permission (iOS via FFI, Android via channel), Android service
@@ -82,7 +88,7 @@ Threading: control calls take a mutex that the audio callback never touches; the
 - `app/packages/pocket_audio/src/third_party/miniaudio/` — vendored miniaudio 0.11.25
 - `app/packages/pocket_audio/hook/build.dart` — native build ([[d006-native-build]])
 - `app/packages/pocket_audio/lib/pocket_audio_bindings_generated.dart` — generated bindings
-- `app/packages/pocket_audio/test/` — offline tone tests; `recorder_test.dart` (bit-exact WAV + peaks, pause/resume, crash-safe header, gain/meter/clip, 30-min run at 100× real time); `player_test.dart` (fade-in, pause holds position, end/finished, seek, crash-cut take, rebuilt peaks); `navigation_test.dart` (loop period exact + click-free wrap, click-free seek, scrub forward/back without overshoot, resume after scrub, shuttle); `latency_test.dart`; `looper_test.dart` (simulated room: seamless restart, clap overdub within 1 ms at 0/22/100 ms round trips, instant undo/redo, redo dropped by a new overdub, 20 layers ≈ 300× real time on the host, starved overdub refused, re-record at other lengths stays in bounds, bounce length); `chop_test.dart` (list order, no click at worst-phase cuts with gain changes, sanity check that hard cuts would click, splits stay sample-exact, loop across a join, shrinking lists, zero-crossing snap); `engine_device_test.dart` (tag `device`, skipped by default: output callbacks + 2 s real-mic take). Test files run one at a time (`dart_test.yaml`: the engine is process-global).
+- `app/packages/pocket_audio/test/` — offline tone tests; `recorder_test.dart` (bit-exact WAV + peaks, pause/resume, crash-safe header, gain/meter/clip, 30-min run at 100× real time); `player_test.dart` (fade-in, pause holds position, end/finished, seek, crash-cut take, rebuilt peaks); `navigation_test.dart` (loop period exact + click-free wrap, click-free seek, scrub forward/back without overshoot, resume after scrub, shuttle); `latency_test.dart`; `looper_test.dart` (simulated room: seamless restart, clap overdub within 1 ms at 0/22/100 ms round trips, instant undo/redo, redo dropped by a new overdub, 20 layers ≈ 300× real time on the host, starved overdub refused, re-record at other lengths stays in bounds, bounce length); `chop_test.dart` (list order, no click at worst-phase cuts with gain changes, sanity check that hard cuts would click, splits stay sample-exact, loop across a join, shrinking lists, zero-crossing snap); `sampling_test.dart` (M7: reverse sample-exact, reversed split seamless, fades smooth and silent at the ends, fades on stack layers, varispeed pitch within 1 cent at ×0.5/×1.5/×2 with exact length, no aliasing at ×4, varispeed after pitch/tempo, 1 min in ~0.1 s; export 24-bit equals the clips, 16/32-bit, 44.1 kHz pitch and length, seamless loop wraps at 48 and 44.1 kHz, edge fades without a seam, failure leaves no file; peak); `engine_device_test.dart` (tag `device`, skipped by default: output callbacks + 2 s real-mic take). Test files run one at a time (`dart_test.yaml`: the engine is process-global).
 - `app/lib/main.dart` — M0 hello-tone screen + Licences screen
 
 ## Dependencies
@@ -94,4 +100,6 @@ miniaudio ([[d001-platform-and-stack]], [[d004-licence]]); build via [[d006-nati
 - 2026-11-13, real iPhone 16 Pro Max (iOS 26.6.2), release build: tone audible; A3/A4/A5 pitch and volume slider change live; callback count keeps rising.
 - 2026-11-13, macOS host: recorder tests pass (14/14), including 30 min of audio at 100× real time with 0 dropped frames and every sample bit-exact.
 - 2026-11-13, macOS host: 21/21 core tests + 3 app tests pass; device test recorded 2 s from the real Mac mic (95,520 frames, 0 dropped).
-- Not yet verified: hello tone on a real Android phone; recording on the iPhone.
+- 2026-11-13 → 2026-11-14, iPhone 16 Pro Max: recording (M1), player/scrub/loops and the 22.1 ms latency gate (M2), timeline joins (M3), renders (M4), looper (M5a), tracks and bounce (M6) — see the feature pages.
+- 2026-11-14, macOS host: 98 core tests pass (20 for M7).
+- Not yet verified: anything on a real Android phone; M7 on the iPhone.

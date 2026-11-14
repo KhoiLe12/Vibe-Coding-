@@ -255,3 +255,32 @@
 ## [2026-11-14] build | M6 Layers verified on iOS (bounce check pending)
 - pages touched: [[layers]], [[overview]]
 - notes: Human: recorded-layer alignment, undo, 8 layers, per-layer and whole-stack editing all work. Bounce not yet confirmed on device.
+
+## [2026-11-14] lint | Stale status claims fixed; M6 bounce confirmed; M7 next
+- pages touched: [[overview]], [[audio-engine]], [[layers]], [[sampling-tools]], [[loop-pedal]], [[d015-layers]], [[index]]
+- notes: README said M0; audio-engine still had M1 "in progress"; sampling-tools tagged m6. Human confirmed the bounce on the iPhone,
+  so M6 is done. Human chose M7 sampling tools before M5b.
+
+## [2026-11-14] decision | M7 sampling tools: split points = slices, share sheet now, varispeed ±24 st
+- pages touched: [[d016-sampling-tools]], [[sampling-tools]], [[export]], [[index]]
+- notes: Human's calls on the three asked questions (all recommended options). Clip-level reverse/fades/gain, peak normalize to
+  −1 dBFS (LUFS deferred), selection fades instead of handles, loop export keeps length (seam from following audio, else edge fades).
+
+## [2026-11-14] build | M7 sampling tools built
+- pages touched: [[sampling-tools]], [[d016-sampling-tools]], [[audio-engine]], [[dsp-processor]], [[edit-model]], [[storage]],
+  [[varispeed]], [[export]], [[overview]], [[index]]
+- notes: Engine: reverse + fade envelopes per clip, sinc resampler, varispeed renders, WAV export (16/24/32-bit, 48/44.1 kHz,
+  seamless loops with smpl), peak scan. App: tools sheet, varispeed chip, export sheet + share_plus. 96 core + 49 app tests pass.
+  Installed on iPhone (via devicectl; `flutter install` failed). Awaiting phone check and a DAW import of slices.
+
+## [2026-11-14] build | M7 feedback: fade needle, formants under varispeed, stack player fix
+- pages touched: [[d016-sampling-tools]], [[sampling-tools]], [[edit-model]], [[audio-engine]], [[dsp-processor]], [[storage]], [[layers]]
+- notes: Human: all tools work except selection fades (too clunky) → needle on the clip under the playhead, per-clip fade ramps,
+  join crossfade skipped when gain runs on. Keep voice natural now applies to varispeed (formants pre-shifted 1/speed). Stack error
+  after editing a layer = editor dispose closing the stack's player late → ownership tokens. 98 core + 58 app tests. Installed on iPhone.
+
+## [2026-11-14] build | M7 feedback 2: fade handles at the take/selection edges
+- pages touched: [[d016-sampling-tools]], [[sampling-tools]], [[edit-model]]
+- notes: Human: the needle was still clunky. Fades are now corner handles at the start/end of the take or selection (one curve
+  across clips via per-clip ramps; split only at a selection's edge). Needle mode and the Fade in/out tool entries removed.
+  98 core + 63 app tests pass. Installed on iPhone.

@@ -245,6 +245,32 @@ external int ps_player_set_source_clips(
   int count,
 );
 
+/// Like ps_player_set_source_clips, with sampling tools (M7): fades holds four
+/// values per clip — inA, inB, outA, outB in the clip's frames (timeline
+/// order): silent before inA, full from inB; full until outA, silent from outB;
+/// a ramp with B <= A is off — and reverse one byte per clip (non-zero =
+/// played backwards). Either may be NULL.
+@ffi.Native<
+  ffi.Int64 Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Int32,
+  )
+>()
+external int ps_player_set_source_clips_fx(
+  ffi.Pointer<ffi.Char> source_path,
+  ffi.Pointer<ffi.Int64> src_starts,
+  ffi.Pointer<ffi.Int64> src_ends,
+  ffi.Pointer<ffi.Float> gains,
+  ffi.Pointer<ffi.Double> fades,
+  ffi.Pointer<ffi.Uint8> reverse,
+  int count,
+);
+
 /// Nearest zero crossing in the open take's recording within ±radius frames
 /// of src_frame, or src_frame if there is none (used to snap cuts).
 @ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Int32)>()
@@ -318,6 +344,33 @@ external int ps_render_start(
   double semitones,
   double tempo,
   int formant,
+);
+
+/// ps_render_start plus varispeed (M7): after pitch/tempo, the result is
+/// resampled by speed (tape-style: 2 = an octave up and twice as fast), so the
+/// output has round(round((end-start)/tempo)/speed) frames. speed 1 = as
+/// ps_render_start; pitch 0 and tempo 1 = varispeed only (no Signalsmith).
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Int64,
+    ffi.Int64,
+    ffi.Pointer<ffi.Char>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Int32,
+    ffi.Double,
+  )
+>()
+external int ps_render_start_ex(
+  ffi.Pointer<ffi.Char> input,
+  int start,
+  int end,
+  ffi.Pointer<ffi.Char> output,
+  double semitones,
+  double tempo,
+  int formant,
+  double speed,
 );
 
 @ffi.Native<ffi.Void Function()>()
@@ -472,6 +525,33 @@ external int ps_player_set_stack(
   ffi.Pointer<ffi.Float> gains,
 );
 
+/// ps_player_set_stack with per-clip fades and reverse flags (as in
+/// ps_player_set_source_clips_fx, flattened like starts/ends).
+@ffi.Native<
+  ffi.Int64 Function(
+    ffi.Int32,
+    ffi.Pointer<ffi.Pointer<ffi.Char>>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int32>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Uint8>,
+  )
+>()
+external int ps_player_set_stack_fx(
+  int count,
+  ffi.Pointer<ffi.Pointer<ffi.Char>> paths,
+  ffi.Pointer<ffi.Int64> offsets,
+  ffi.Pointer<ffi.Int32> clip_counts,
+  ffi.Pointer<ffi.Int64> starts,
+  ffi.Pointer<ffi.Int64> ends,
+  ffi.Pointer<ffi.Float> gains,
+  ffi.Pointer<ffi.Double> fades,
+  ffi.Pointer<ffi.Uint8> reverse,
+);
+
 /// Volume of track k (mute/solo/volume); smoothed over 5 ms.
 @ffi.Native<ffi.Void Function(ffi.Int32, ffi.Float)>()
 external void ps_player_set_track_gain(int track, double gain);
@@ -501,6 +581,59 @@ external void ps_engine_process_offline(
   ffi.Pointer<ffi.Float> output,
   int frames,
   int channels,
+);
+
+/// Renders count clips of source_path (as ps_player_set_source_clips_fx; 0 =
+/// the whole file) into a mono WAV at output: sample_rate 48000 or 44100
+/// (resampled), bits 16 (dithered PCM), 24 (PCM) or 32 (float). loop_frames
+/// > 0 exports the first loop_frames as a seamless loop with a smpl loop
+/// chunk; audio in the clips after that is crossfaded into the head (10 ms),
+/// or, if there is less than 10 ms, the ends get 2 ms fades. Returns PS_OK or
+/// PS_ERROR_FILE.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Int32,
+    ffi.Pointer<ffi.Char>,
+    ffi.Int32,
+    ffi.Int32,
+    ffi.Int64,
+  )
+>()
+external int ps_export_wav(
+  ffi.Pointer<ffi.Char> source_path,
+  ffi.Pointer<ffi.Int64> starts,
+  ffi.Pointer<ffi.Int64> ends,
+  ffi.Pointer<ffi.Float> gains,
+  ffi.Pointer<ffi.Double> fades,
+  ffi.Pointer<ffi.Uint8> reverse,
+  int count,
+  ffi.Pointer<ffi.Char> output,
+  int sample_rate,
+  int bits,
+  int loop_frames,
+);
+
+/// Largest absolute sample in count ranges [starts[i], ends[i]) of a mono
+/// float WAV (for normalize). -1 if the file can't be read.
+@ffi.Native<
+  ffi.Double Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Int32,
+  )
+>()
+external double ps_peak(
+  ffi.Pointer<ffi.Char> path,
+  ffi.Pointer<ffi.Int64> starts,
+  ffi.Pointer<ffi.Int64> ends,
+  int count,
 );
 
 /// Starts chirping every interval_ms (at least ~405 ms) and clears results.

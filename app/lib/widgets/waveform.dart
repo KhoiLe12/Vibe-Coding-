@@ -22,7 +22,20 @@ class WaveformPainter extends CustomPainter {
     this.markers = const [],
     this.markerColor,
     this.revision = 0,
+    this.fades,
+    this.fadeColor,
+    this.handleSize = 18,
   });
+
+  /// Fade handles (M7) on a region (the take or a selection), as fractions
+  /// of the window: the region [from]–[to], and where the fade in reaches
+  /// full volume ([inEnd]) and the fade out starts ([outStart]). Draws each
+  /// fade's curve and a square handle in the top corner; [active] is the
+  /// handle being dragged (true = fade in), drawn larger.
+  final ({double from, double inEnd, double outStart, double to, bool? active})?
+  fades;
+  final Color? fadeColor;
+  final double handleSize;
 
   /// Shaded spans behind the waveform, as fractions of the window (0..1):
   /// loop selection, or the visible window on an overview strip.
@@ -104,6 +117,28 @@ class WaveformPainter extends CustomPainter {
       canvas.drawRect(Rect.fromLTWH(x - 0.5, 0, 1, size.height), markerPaint);
     }
 
+    final f = fades;
+    if (f != null) {
+      final c = fadeColor ?? Colors.orange;
+      final w = size.width;
+      _drawFade(canvas, size, c, f.from * w, f.inEnd * w);
+      _drawFade(canvas, size, c, f.to * w, f.outStart * w);
+      _drawHandle(
+        canvas,
+        c,
+        f.inEnd * w,
+        fadeIn: true,
+        active: f.active == true,
+      );
+      _drawHandle(
+        canvas,
+        c,
+        f.outStart * w,
+        fadeIn: false,
+        active: f.active == false,
+      );
+    }
+
     if (playhead != null) {
       final px = playhead!.clamp(0.0, 1.0) * size.width;
       canvas.drawRect(
@@ -111,6 +146,60 @@ class WaveformPainter extends CustomPainter {
         Paint()..color = playheadColor ?? Colors.white,
       );
     }
+  }
+
+  /// A fade from silence at [edge] to full at [full] (pixels): shaded, with
+  /// its gain curve drawn top (full) to bottom (silent).
+  void _drawFade(Canvas canvas, Size size, Color c, double edge, double full) {
+    if ((full - edge).abs() < 0.5) return;
+    canvas.drawRect(
+      Rect.fromLTRB(math.min(edge, full), 0, math.max(edge, full), size.height),
+      Paint()..color = c.withValues(alpha: 0.15),
+    );
+    final path = Path();
+    const steps = 48;
+    for (var i = 0; i <= steps; i++) {
+      final u = i / steps; // 0 at the edge, 1 where it is full
+      final s = math.sin(u * math.pi / 2);
+      final y = size.height * (1 - s * s);
+      final x = edge + (full - edge) * u;
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = c
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  }
+
+  /// A square handle hanging from the top at [x]: right of it for a fade in,
+  /// left of it for a fade out, so at the region's edges both stay inside.
+  void _drawHandle(
+    Canvas canvas,
+    Color c,
+    double x, {
+    required bool fadeIn,
+    required bool active,
+  }) {
+    final s = active ? handleSize * 1.3 : handleSize;
+    final rect = fadeIn
+        ? Rect.fromLTWH(x, 0, s, s)
+        : Rect.fromLTWH(x - s, 0, s, s);
+    canvas.drawRRect(
+      RRect.fromRectAndCorners(
+        rect,
+        bottomLeft: fadeIn ? Radius.zero : const Radius.circular(4),
+        bottomRight: fadeIn ? const Radius.circular(4) : Radius.zero,
+      ),
+      Paint()..color = c,
+    );
+    canvas.drawRect(Rect.fromLTWH(x - 1, 0, 2, s * 1.6), Paint()..color = c);
   }
 
   @override
@@ -122,6 +211,7 @@ class WaveformPainter extends CustomPainter {
       old.playhead != playhead ||
       !listEquals(old.bands, bands) ||
       !listEquals(old.markers, markers) ||
+      old.fades != fades ||
       old.color != color;
 }
 

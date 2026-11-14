@@ -195,6 +195,19 @@ PS_EXPORT int64_t ps_player_set_source_clips(const char* source_path,
                                              const float* gains,
                                              int32_t count);
 
+// Like ps_player_set_source_clips, with sampling tools (M7): fades holds four
+// values per clip — inA, inB, outA, outB in the clip's frames (timeline
+// order): silent before inA, full from inB; full until outA, silent from outB;
+// a ramp with B <= A is off — and reverse one byte per clip (non-zero =
+// played backwards). Either may be NULL.
+PS_EXPORT int64_t ps_player_set_source_clips_fx(const char* source_path,
+                                                const int64_t* src_starts,
+                                                const int64_t* src_ends,
+                                                const float* gains,
+                                                const double* fades,
+                                                const uint8_t* reverse,
+                                                int32_t count);
+
 // Nearest zero crossing in the open take's recording within ±radius frames
 // of src_frame, or src_frame if there is none (used to snap cuts).
 PS_EXPORT int64_t ps_player_zero_crossing(int64_t src_frame, int32_t radius);
@@ -244,6 +257,14 @@ PS_EXPORT int32_t ps_render_start(const char* input, int64_t start,
                                   int64_t end, const char* output,
                                   double semitones, double tempo,
                                   int32_t formant);
+// ps_render_start plus varispeed (M7): after pitch/tempo, the result is
+// resampled by speed (tape-style: 2 = an octave up and twice as fast), so the
+// output has round(round((end-start)/tempo)/speed) frames. speed 1 = as
+// ps_render_start; pitch 0 and tempo 1 = varispeed only (no Signalsmith).
+PS_EXPORT int32_t ps_render_start_ex(const char* input, int64_t start,
+                                     int64_t end, const char* output,
+                                     double semitones, double tempo,
+                                     int32_t formant, double speed);
 PS_EXPORT void ps_render_cancel(void);
 // Id, state (PS_RENDER_*) and progress (0..1) of the latest job.
 PS_EXPORT int32_t ps_render_job(void);
@@ -325,6 +346,17 @@ PS_EXPORT int64_t ps_player_set_stack(int32_t count, const char* const* paths,
                                       const int32_t* clip_counts,
                                       const int64_t* starts,
                                       const int64_t* ends, const float* gains);
+// ps_player_set_stack with per-clip fades and reverse flags (as in
+// ps_player_set_source_clips_fx, flattened like starts/ends).
+PS_EXPORT int64_t ps_player_set_stack_fx(int32_t count,
+                                         const char* const* paths,
+                                         const int64_t* offsets,
+                                         const int32_t* clip_counts,
+                                         const int64_t* starts,
+                                         const int64_t* ends,
+                                         const float* gains,
+                                         const double* fades,
+                                         const uint8_t* reverse);
 // Volume of track k (mute/solo/volume); smoothed over 5 ms.
 PS_EXPORT void ps_player_set_track_gain(int32_t track, float gain);
 // Mixes the open stack (or take) at the current volumes into a mono float WAV.
@@ -337,6 +369,29 @@ PS_EXPORT int64_t ps_recorder_start_stamp(void);
 // without a device. Do not call while the engine is running.
 PS_EXPORT void ps_engine_process_offline(const float* input, float* output,
                                          int32_t frames, int32_t channels);
+
+// ---- Sampling tools (M7) ---------------------------------------------------
+// wiki/features/sampling-tools.md. Both run on the calling thread: call them
+// from a background isolate.
+
+// Renders count clips of source_path (as ps_player_set_source_clips_fx; 0 =
+// the whole file) into a mono WAV at output: sample_rate 48000 or 44100
+// (resampled), bits 16 (dithered PCM), 24 (PCM) or 32 (float). loop_frames
+// > 0 exports the first loop_frames as a seamless loop with a smpl loop
+// chunk; audio in the clips after that is crossfaded into the head (10 ms),
+// or, if there is less than 10 ms, the ends get 2 ms fades. Returns PS_OK or
+// PS_ERROR_FILE.
+PS_EXPORT int32_t ps_export_wav(const char* source_path,
+                                const int64_t* starts, const int64_t* ends,
+                                const float* gains, const double* fades,
+                                const uint8_t* reverse, int32_t count,
+                                const char* output, int32_t sample_rate,
+                                int32_t bits, int64_t loop_frames);
+
+// Largest absolute sample in count ranges [starts[i], ends[i]) of a mono
+// float WAV (for normalize). -1 if the file can't be read.
+PS_EXPORT double ps_peak(const char* path, const int64_t* starts,
+                         const int64_t* ends, int32_t count);
 
 // ---- Latency probe (M2 go/no-go gate) ------------------------------------
 // wiki/decisions/d008-latency-gate-route.md. While running, a 5 ms chirp is

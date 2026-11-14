@@ -196,6 +196,11 @@ float MappedWav::at(int64_t i) const {
   return s;
 }
 
+float fadeCurve(float x) {
+  const float s = std::sin(std::clamp(x, 0.0f, 1.0f) * 1.57079632679f);
+  return s * s;
+}
+
 float Player::trackAt(const Track& tr, int64_t t) {
   if (t < 0 || t >= tr.length || tr.clips.empty()) return 0.0f;
   const auto& clips = tr.clips;
@@ -208,21 +213,24 @@ float Player::trackAt(const Track& tr, int64_t t) {
   const TimelineClip& c = clips[lo];
   // Join crossfade: centred on the join, `half` frames either side. The
   // outgoing clip runs past its end, the incoming one starts early.
+  // A clip's sample at timeline frame t (also past its ends, inside joins).
+  auto val = [&](const TimelineClip& x) {
+    const int64_t k = t - x.tStart;
+    return tr.src->at(x.srcIndex(k)) * x.gainAt(k);
+  };
   auto mix = [&](const TimelineClip& a, const TimelineClip& b) {
     const int64_t join = b.tStart;
     const float u = (static_cast<float>(t - (join - b.half)) + 0.5f) /
                     static_cast<float>(2 * b.half);
     constexpr float kHalfPi = 1.57079632679f;
-    const float va = tr.src->at(a.srcEnd + (t - join)) * a.gain;
-    const float vb = tr.src->at(b.srcStart + (t - join)) * b.gain;
-    return va * std::cos(u * kHalfPi) + vb * std::sin(u * kHalfPi);
+    return val(a) * std::cos(u * kHalfPi) + val(b) * std::sin(u * kHalfPi);
   };
   if (lo + 1 < clips.size()) {
     const TimelineClip& n = clips[lo + 1];
     if (t >= n.tStart - n.half) return mix(c, n);
   }
   if (lo > 0 && t < c.tStart + c.half) return mix(clips[lo - 1], c);
-  return tr.src->at(c.srcStart + (t - c.tStart)) * c.gain;
+  return val(c);
 }
 
 float Player::timelineAt(const Timeline* tl, int64_t t) const {
@@ -258,8 +266,26 @@ float Player::interp(const Timeline* tl, double pos) const {
   return ((c3 * t + c2) * t + c1) * t + y1;
 }
 
-Track Player::buildTrack(std::shared_ptr<MappedWav> src, const int64_t* s,
-                         const int64_t* e, const float* g, int32_t n) {
+std::vector<ClipSpec> Player::specsFrom(const int64_t* s, const int64_t* e,
+                                        const float* g, const double* fades,
+                                        const uint8_t* rev, int32_t n) {
+  std::vector<ClipSpec> out(static_cast<size_t>(std::max(0, n)));
+  for (int32_t i = 0; i < n; ++i) {
+    ClipSpec& c = out[static_cast<size_t>(i)];
+    c.start = s[i];
+    c.end = e[i];
+    if (g) c.gain = g[i];
+    if (fades) {
+      const double* f = fades + 4 * i;
+      c.fades = {f[0], f[1], f[2], f[3]};
+    }
+    if (rev) c.reverse = rev[i] != 0;
+  }
+  return out;
+}
+
+Track Player::buildTrack(std::shared_ptr<MappedWav> src, const ClipSpec* specs,
+                         int32_t n) {
   Track tr;
   const int64_t frames = src->frames;
   tr.src = std::move(src);
@@ -268,9 +294,15 @@ Track Player::buildTrack(std::shared_ptr<MappedWav> src, const int64_t* s,
   } else {
     tr.clips.reserve(static_cast<size_t>(n));
     for (int32_t i = 0; i < n; ++i) {
-      const int64_t a = std::clamp<int64_t>(s[i], 0, frames);
-      const int64_t b = std::clamp<int64_t>(e[i], 0, frames);
-      if (b > a) tr.clips.push_back({a, b, 0, g ? g[i] : 1.0f, 0});
+      const ClipSpec& sp = specs[i];
+      const int64_t a = std::clamp<int64_t>(sp.start, 0, frames);
+      const int64_t b = std::clamp<int64_t>(sp.end, 0, frames);
+      if (b > a) {
+        TimelineClip c{a, b, 0, sp.gain, 0};
+        c.reverse = sp.reverse;
+        c.fades = sp.fades;
+        tr.clips.push_back(c);
+      }
     }
   }
   int64_t t = 0;
@@ -281,8 +313,18 @@ Track Player::buildTrack(std::shared_ptr<MappedWav> src, const int64_t* s,
       const TimelineClip& p = tr.clips[i - 1];
       c.half = std::min<int64_t>({kJoinHalfFrames, (p.srcEnd - p.srcStart) / 2,
                                   (c.srcEnd - c.srcStart) / 2});
-      // Adjacent pieces of the recording need no crossfade.
-      if (p.srcEnd == c.srcStart && p.gain == c.gain) c.half = 0;
+      const bool contiguous = c.reverse ? c.srcEnd == p.srcStart
+                                        : p.srcEnd == c.srcStart;
+      // Contiguous and in the same direction: the samples run on across the
+      // join. If the gain does too (no step: same gain, and any fade either
+      // ends at the join or carries on, as a split leaves it), there is
+      // nothing to hide; a crossfade of the audio with itself would only add
+      // a level bump. A step under 0.1 % (-60 dB) is inaudible.
+      const float step = std::fabs(p.gainAt(p.length()) - c.gainAt(0));
+      const float scale = std::max(std::fabs(p.gain), std::fabs(c.gain));
+      const bool seamless =
+          contiguous && p.reverse == c.reverse && step <= 1e-3f * scale;
+      if (seamless) c.half = 0;
     }
     t += c.srcEnd - c.srcStart;
   }
@@ -291,10 +333,9 @@ Track Player::buildTrack(std::shared_ptr<MappedWav> src, const int64_t* s,
 }
 
 Timeline* Player::buildTimeline(std::shared_ptr<MappedWav> src,
-                                const int64_t* s, const int64_t* e,
-                                const float* g, int32_t n) {
+                                const ClipSpec* specs, int32_t n) {
   auto* tl = new Timeline();
-  tl->tracks.push_back(buildTrack(std::move(src), s, e, g, n));
+  tl->tracks.push_back(buildTrack(std::move(src), specs, n));
   tl->length = tl->tracks[0].length;
   return tl;
 }
@@ -318,7 +359,9 @@ void Player::swapTimeline(Timeline* fresh) {
 
 int64_t Player::setClips(const char* sourcePath, const int64_t* srcStarts,
                          const int64_t* srcEnds, const float* gains,
+                         const double* fades, const uint8_t* reverse,
                          int32_t n) {
+  const auto specs = specsFrom(srcStarts, srcEnds, gains, fades, reverse, n);
   std::lock_guard<std::mutex> lock(controlMutex_);
   if (!recording_) return 0;
   std::shared_ptr<MappedWav> src = recording_;
@@ -331,7 +374,7 @@ int64_t Player::setClips(const char* sourcePath, const int64_t* srcStarts,
       if (!src) return -1;
     }
   }
-  Timeline* fresh = buildTimeline(std::move(src), srcStarts, srcEnds, gains, n);
+  Timeline* fresh = buildTimeline(std::move(src), specs.data(), n);
   swapTimeline(fresh);
   return fresh->length;
 }
@@ -369,9 +412,13 @@ void Player::openStack() {
 int64_t Player::setStack(int32_t n, const char* const* paths,
                          const int64_t* offsets, const int32_t* clipCounts,
                          const int64_t* starts, const int64_t* ends,
-                         const float* gains) {
+                         const float* gains, const double* fades,
+                         const uint8_t* reverse) {
   std::lock_guard<std::mutex> lock(controlMutex_);
   if (n < 0 || n > kMaxTracks) return -1;
+  int32_t total = 0;
+  for (int32_t k = 0; k < n; ++k) total += std::max(0, clipCounts[k]);
+  const auto specs = specsFrom(starts, ends, gains, fades, reverse, total);
   auto* fresh = new Timeline();
   fresh->fadeEdges = true;
   const Timeline* cur = timeline_.load();
@@ -389,9 +436,8 @@ int64_t Player::setStack(int32_t n, const char* const* paths,
       delete fresh;
       return -1;
     }
-    Track tr = buildTrack(std::move(src), starts + at, ends + at,
-                          gains ? gains + at : nullptr, clipCounts[k]);
-    at += clipCounts[k];
+    Track tr = buildTrack(std::move(src), specs.data() + at, clipCounts[k]);
+    at += std::max(0, clipCounts[k]);
     tr.offset = std::max<int64_t>(0, offsets[k]);
     fresh->length = std::max(fresh->length, tr.offset + tr.length);
     fresh->tracks.push_back(std::move(tr));
@@ -471,9 +517,7 @@ std::pair<std::shared_ptr<MappedWav>, int64_t> Player::sourceFrameAt(
     const int64_t u = t - tr.offset;
     if (u < 0 || u >= tr.length) continue;
     for (const auto& c : tr.clips) {
-      if (u < c.tStart + (c.srcEnd - c.srcStart)) {
-        return {tr.src, c.srcStart + (u - c.tStart)};
-      }
+      if (u < c.tStart + c.length()) return {tr.src, c.srcIndex(u - c.tStart)};
     }
   }
   return {nullptr, -1};
@@ -647,7 +691,7 @@ int32_t Player::open(const char* path) {
     trackTarget_[k].store(1.0f);
     trackGain_[k] = 1.0f;
   }
-  timeline_.store(buildTimeline(rec, nullptr, nullptr, nullptr, 0));
+  timeline_.store(buildTimeline(rec, nullptr, 0));
   length_.store(rec->frames);
 
   stopPrefetch_.store(false);
@@ -722,8 +766,8 @@ void Player::prefetchLoop() {
       for (const auto& tr : tl->tracks) {
         const int64_t u = std::clamp<int64_t>(t - tr.offset, 0, tr.length);
         for (const auto& c : tr.clips) {
-          if (u < c.tStart + (c.srcEnd - c.srcStart)) {
-            spots.emplace_back(tr.src, c.srcStart + (u - c.tStart));
+          if (u < c.tStart + c.length()) {
+            spots.emplace_back(tr.src, c.srcIndex(u - c.tStart));
             break;
           }
         }

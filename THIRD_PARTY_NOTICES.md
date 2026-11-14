@@ -14,9 +14,11 @@ The app shows these licences on its in-app **Licences** screen.
 | [Signalsmith Stretch](https://signalsmith-audio.co.uk/code/stretch/) by Geraint Luff / Signalsmith Audio | 1.4.0 | MIT | `app/packages/pocket_audio/src/third_party/signalsmith/stretch/` | shipped (M4, wiki/decisions/d002-pitch-time-library.md) |
 | [Signalsmith Linear](https://github.com/Signalsmith-Audio/linear) by Signalsmith Audio | 0.6.4 | MIT | `app/packages/pocket_audio/src/third_party/signalsmith/linear/` | shipped (required by Stretch) |
 | [path_provider](https://pub.dev/packages/path_provider) (Flutter team) | ^2.1.6 | BSD-3-Clause | Dart package | shipped (listed automatically) |
+| [share_plus](https://pub.dev/packages/share_plus) (Flutter Community) | ^13.3.1 | BSD-3-Clause | Dart package + iOS/Android plugin | shipped (M7 export, wiki/decisions/d016-sampling-tools.md; listed automatically) |
 
 Dart packages pulled in through `pub` (for example `ffi`, `hooks`,
-`native_toolchain_c`, `code_assets`, `logging`) are BSD-3-Clause and are listed
+`native_toolchain_c`, `code_assets`, `logging`, and share_plus's
+`cross_file`, `mime`, `file`, `url_launcher_*`, `web`, `win32`) are BSD-3-Clause and are listed
 automatically on the Licences screen by Flutter's licence registry.
 
 Full licence texts:

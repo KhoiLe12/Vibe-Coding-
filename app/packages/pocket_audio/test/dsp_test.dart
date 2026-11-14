@@ -245,7 +245,7 @@ void main() {
     final r = readWav(out);
     PocketAudio.openTake(input);
     final len = PocketAudio.setClips([
-      (start: 1000, end: 21000, gain: 1.0),
+      PlayClip(1000, 21000, gain: 1.0),
     ], source: out);
     expect(len, 20000);
     PocketAudio.playing = true;

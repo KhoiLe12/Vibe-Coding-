@@ -30,7 +30,7 @@ String take(String name, int frames, double Function(int) f) {
 }
 
 StackTrack whole(String path, int frames, int offset) =>
-    StackTrack(path, offset, [(start: 0, end: frames, gain: 1.0)]);
+    StackTrack(path, offset, [PlayClip(0, frames, gain: 1.0)]);
 
 Float32List play(int frames) {
   final out = Float32List(frames);

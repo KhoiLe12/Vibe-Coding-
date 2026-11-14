@@ -16,7 +16,7 @@ The plan's [[loop-pedal]] was built as M5a. The human then said the feature they
 - **Both ways in:** record a new layer while hearing the stack, and add existing takes as layers.
 - **Layers slide** in time; recorded ones line up automatically.
 - **Recorded layers also appear as takes** in the list (marked as part of a stack).
-- **Keep the loop pedal** as a separate tool, with one overdub press = one layer (fixed 2026-11-14). Its part two (**M5b**: tempo sync, count-in, click, feedback, footswitch) comes **after Layers**.
+- **Keep the loop pedal** as a separate tool, with one overdub press = one layer (fixed 2026-11-14). Its part two (**M5b**: tempo sync, count-in, click, feedback, footswitch) comes **after Layers** (*2026-11-14: the human then chose M7 sampling tools first; M5b follows M7*).
 - **Roadmap:** Layers becomes **M6**; sampling tools, projects, export and the backlog each move one later (M7, M8, M9, M10+). References across the wiki were renumbered the same day (the log and the source summary keep the original numbering).
 - Acceptance criteria proposed by Claude and approved: see [[layers]].
 

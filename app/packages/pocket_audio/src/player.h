@@ -18,6 +18,7 @@
 #ifndef PS_PLAYER_H
 #define PS_PLAYER_H
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -56,6 +57,32 @@ struct MappedWav {
   uint32_t sampleRate = 48000;
 };
 
+// Fades of a clip (M7, wiki/decisions/d016-sampling-tools.md), in the
+// clip's own frames (timeline order, so independent of reverse): silent
+// before inA, fading in to full at inB; full until outA, silent from outB.
+// A ramp with B <= A is off. Positions may lie outside the clip — after a
+// split, each piece keeps its share of the same curve, so a split never
+// changes the sound.
+struct Fades {
+  double inA = 0, inB = 0, outA = 0, outB = 0;
+  bool hasIn() const { return inB > inA; }
+  bool hasOut() const { return outB > outA; }
+  bool any() const { return hasIn() || hasOut(); }
+};
+
+// A clip as the app describes it: [start, end) of a source, with gain,
+// played backwards if `reverse`, with fades.
+struct ClipSpec {
+  int64_t start = 0, end = 0;
+  float gain = 1.0f;
+  Fades fades;
+  bool reverse = false;
+};
+
+// Fade curve: sin² of a quarter turn — starts and ends flat, so a fade never
+// clicks at either end. x in [0, 1].
+float fadeCurve(float x);
+
 // One clip of the edit list, placed on the timeline (wiki/decisions/
 // d012-chop-model.md).
 struct TimelineClip {
@@ -64,6 +91,30 @@ struct TimelineClip {
   float gain;
   int64_t half;  // half-width of the crossfade at the join with the previous
                  // clip (0 for the first clip)
+  bool reverse = false;
+  Fades fades;
+
+  int64_t length() const { return srcEnd - srcStart; }
+  // Source frame for the clip's k-th frame (k may run past either end, for
+  // join crossfades: playback simply continues in its direction).
+  int64_t srcIndex(int64_t k) const {
+    return reverse ? srcEnd - 1 - k : srcStart + k;
+  }
+  // Gain × fades at the clip's k-th frame.
+  float gainAt(int64_t k) const {
+    if (!fades.any()) return gain;
+    const double x = static_cast<double>(k) + 0.5;
+    float g = gain;
+    if (fades.hasIn()) {
+      g *= fadeCurve(static_cast<float>((x - fades.inA) /
+                                        (fades.inB - fades.inA)));
+    }
+    if (fades.hasOut()) {
+      g *= fadeCurve(static_cast<float>((fades.outB - x) /
+                                        (fades.outB - fades.outA)));
+    }
+    return g;
+  }
 };
 
 // One clip list over one source file (a take's recording or its render),
@@ -113,8 +164,11 @@ class Player {
   // gains; n == 0 plays the whole source. Positions, loops and scrub are in
   // timeline frames. Returns the new timeline length, or -1 if the source
   // can't be opened. The caller re-seeks.
+  // fades (4 per clip: inA, inB, outA, outB) and reverse may be null (no
+  // fades / forwards).
   int64_t setClips(const char* sourcePath, const int64_t* srcStarts,
-                   const int64_t* srcEnds, const float* gains, int32_t n);
+                   const int64_t* srcEnds, const float* gains,
+                   const double* fades, const uint8_t* reverse, int32_t n);
 
   // Stack of layers (M6): opens no recording; then setStack().
   void openStack();
@@ -125,7 +179,8 @@ class Player {
   int64_t setStack(int32_t n, const char* const* paths,
                    const int64_t* offsets, const int32_t* clipCounts,
                    const int64_t* starts, const int64_t* ends,
-                   const float* gains);
+                   const float* gains, const double* fades = nullptr,
+                   const uint8_t* reverse = nullptr);
   // Volume of track k (mute/solo/volume), smoothed — never clicks.
   void setTrackGain(int32_t k, float gain);
   // Offline mix of the whole timeline at the current track volumes into a
@@ -159,17 +214,22 @@ class Player {
     render(out, frames, channels);
   }
 
- private:
   // One track at its own frame u, with equal-power crossfades inside joins.
   static float trackAt(const Track& tr, int64_t u);
+  // A track over src from n clip specs (n == 0: the whole source).
+  static Track buildTrack(std::shared_ptr<MappedWav> src,
+                          const ClipSpec* specs, int32_t n);
+  // Flat arrays (as the C API passes them) → specs; null arrays = defaults.
+  static std::vector<ClipSpec> specsFrom(const int64_t* s, const int64_t* e,
+                                         const float* g, const double* fades,
+                                         const uint8_t* rev, int32_t n);
+
+ private:
   // Timeline frame: the tracks mixed at the current smoothed gains.
   float timelineAt(const Timeline* tl, int64_t t) const;
   float interp(const Timeline* tl, double pos) const;  // 4-point Hermite
-  static Track buildTrack(std::shared_ptr<MappedWav> src, const int64_t* s,
-                          const int64_t* e, const float* g, int32_t n);
   static Timeline* buildTimeline(std::shared_ptr<MappedWav> src,
-                                 const int64_t* s, const int64_t* e,
-                                 const float* g, int32_t n);
+                                 const ClipSpec* specs, int32_t n);
   void swapTimeline(Timeline* fresh);
   void stepTrackGains(size_t n);  // audio thread, once per output frame
   void prefetchLoop();

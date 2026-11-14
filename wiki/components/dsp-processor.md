@@ -18,6 +18,9 @@ Wraps the chosen pitch/time library ([[d002-pitch-time-library]]) in **offline m
 - Apple builds use Accelerate FFTs (`SIGNALSMITH_USE_ACCELERATE`).
 - Host speed (Mac): a 1-minute mono render takes ~0.3 s.
 
+## Varispeed (M7, [[d016-sampling-tools]])
+`RenderJob.speed` (from `Tune.varispeed`, [[varispeed]]): after the Signalsmith pass (skipped if pitch and tempo are unchanged), the result is resampled by `speed` with the windowed-sinc `SincResampler` (`resampler.h`: 16 zero crossings, Kaiser β 8, cutoff 0.97 × the lower Nyquist, so ×4 doesn't alias). Both together go through an intermediate file (`<output>.stretched`, deleted after). *Keep voice natural* with varispeed runs the Signalsmith pass even without pitch/tempo, with `setFormantFactor(1 / speed, true)`, so the resampling puts the formants back where they were. Length = round(round(length / tempo) / speed). Host: 1 minute in ~0.1 s.
+
 ## Files in app/
 - `app/packages/pocket_audio/src/dsp_processor.h` / `dsp_processor.cpp` — renderer
 - `app/packages/pocket_audio/src/third_party/signalsmith/` — Signalsmith Stretch 1.4.0 + Linear 0.6.4, headers + MIT licences, checksums in its README
@@ -25,4 +28,4 @@ Wraps the chosen pitch/time library ([[d002-pitch-time-library]]) in **offline m
 - `app/packages/pocket_audio/test/dsp_test.dart` — exact length at 75/125/150 %, pitch kept under tempo (±5 cents), pitch exact at +12/−24/+7/+0.5 st, clicks stay within 10 ms, ranges, cancel, replace, playback from a render
 
 ## C API
-`ps_render_start(input, start, end, output, semitones, tempo, formant)` → job id; `ps_render_cancel`, `ps_render_job`, `ps_render_state` (`PS_RENDER_*`), `ps_render_progress`. Dart: `PocketAudio.startRender()` etc.
+`ps_render_start(input, start, end, output, semitones, tempo, formant)` → job id (`ps_render_start_ex(…, speed)` adds varispeed); `ps_render_cancel`, `ps_render_job`, `ps_render_state` (`PS_RENDER_*`), `ps_render_progress`. Dart: `PocketAudio.startRender()` etc.

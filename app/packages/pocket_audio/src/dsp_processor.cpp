@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "player.h"  // probeWav
+#include "resampler.h"
 #include "third_party/signalsmith/stretch/signalsmith-stretch.h"
 #include "wav_writer.h"
 
@@ -72,6 +73,95 @@ void DspProcessor::cancel() { cancel_.store(true); }
 RenderState DspProcessor::run(const RenderJob& job,
                               const std::atomic<bool>& cancelled,
                               std::atomic<double>* progress) {
+  if (job.speed <= 0 || job.tempo <= 0 || job.end <= job.start) {
+    return kRenderFailed;
+  }
+  RenderState st;
+  if (job.speed == 1.0) {
+    st = stretch(job, job.output, cancelled, progress, 0.0, 1.0);
+  } else if (!job.stretches()) {
+    st = varispeed(job.input, job.start, job.end, job.speed, job.output,
+                   cancelled, progress, 0.0, 1.0);
+  } else {
+    // Both: stretch into an intermediate file, then resample that. The
+    // stretch is the slow part.
+    const std::string mid = job.output + ".stretched";
+    st = stretch(job, mid, cancelled, progress, 0.0, 0.8);
+    if (st == kRenderDone) {
+      st = varispeed(mid, 0, INT64_MAX, job.speed, job.output, cancelled,
+                     progress, 0.8, 1.0);
+    }
+    std::remove(mid.c_str());
+  }
+  if (st == kRenderDone && progress) progress->store(1.0);
+  return st;
+}
+
+RenderState DspProcessor::varispeed(const std::string& input, int64_t start,
+                                    int64_t end, double speed,
+                                    const std::string& output,
+                                    const std::atomic<bool>& cancelled,
+                                    std::atomic<double>* progress, double p0,
+                                    double p1) {
+  std::FILE* in = std::fopen(input.c_str(), "rb");
+  if (!in) return kRenderFailed;
+  uint32_t sampleRate = 0;
+  long dataOffset = 0;
+  uint64_t frames = 0;
+  if (!probeWav(in, &sampleRate, &dataOffset, &frames)) {
+    std::fclose(in);
+    return kRenderFailed;
+  }
+  start = std::clamp<int64_t>(start, 0, static_cast<int64_t>(frames));
+  end = std::clamp<int64_t>(end, start, static_cast<int64_t>(frames));
+  const int64_t inLen = end - start;
+  const int64_t outLen = std::llround(static_cast<double>(inLen) / speed);
+  RangeReader reader(in, dataOffset, start, end);
+  const std::string tmp = output + ".tmp";
+  WavWriter out;
+  if (!out.open(tmp.c_str(), sampleRate)) {
+    std::fclose(in);
+    return kRenderFailed;
+  }
+  SincResampler rs(speed);
+  // Input outside the range is silence, so the ends ring out cleanly.
+  auto fetch = [&](int64_t a, int64_t n, float* buf) {
+    const int64_t lo = std::max<int64_t>(a, 0);
+    std::fill(buf, buf + n, 0.0f);
+    if (lo < a + n && lo < inLen) {
+      reader.read(lo, static_cast<int>(std::min(a + n, inLen) - lo),
+                  buf + (lo - a));
+    }
+  };
+  std::vector<float> buf(kBlock);
+  bool ok = true;
+  for (int64_t j = 0; j < outLen && ok; j += kBlock) {
+    if (cancelled.load()) break;
+    const int64_t n = std::min<int64_t>(kBlock, outLen - j);
+    rs.process(fetch, j, j + n, buf.data());
+    ok = out.write(buf.data(), static_cast<size_t>(n));
+    if (progress) {
+      progress->store(p0 + (p1 - p0) * static_cast<double>(j + n) / outLen);
+    }
+  }
+  std::fclose(in);
+  if (cancelled.load() || !ok) {
+    out.close();
+    std::remove(tmp.c_str());
+    return cancelled.load() ? kRenderCancelled : kRenderFailed;
+  }
+  if (!out.close() || std::rename(tmp.c_str(), output.c_str()) != 0) {
+    std::remove(tmp.c_str());
+    return kRenderFailed;
+  }
+  return kRenderDone;
+}
+
+RenderState DspProcessor::stretch(const RenderJob& job,
+                                  const std::string& output,
+                                  const std::atomic<bool>& cancelled,
+                                  std::atomic<double>* progress, double p0,
+                                  double p1) {
   std::FILE* in = std::fopen(job.input.c_str(), "rb");
   if (!in) return kRenderFailed;
   uint32_t sampleRate = 0;
@@ -88,7 +178,7 @@ RenderState DspProcessor::run(const RenderJob& job,
   const int64_t outLen = std::llround(static_cast<double>(inLen) / job.tempo);
   RangeReader reader(in, dataOffset, start, end);
 
-  const std::string tmp = job.output + ".tmp";
+  const std::string tmp = output + ".tmp";
   WavWriter out;
   if (!out.open(tmp.c_str(), sampleRate)) {
     std::fclose(in);
@@ -105,8 +195,10 @@ RenderState DspProcessor::run(const RenderJob& job,
                static_cast<int>(sampleRate * 0.03));
   st.setTransposeSemitones(static_cast<float>(job.semitones));
   if (job.formant) {
-    st.setFormantFactor(1.0f, true);  // keep formants where they were
-    st.setFormantBase(0);             // detect the fundamental
+    // Keep formants where they were. Varispeed resamples afterwards and
+    // scales every frequency by speed, so leave them 1 / speed lower here.
+    st.setFormantFactor(static_cast<float>(1.0 / job.speed), true);
+    st.setFormantBase(0);  // detect the fundamental
   }
 
   const int inLat = st.inputLatency();
@@ -155,7 +247,7 @@ RenderState DspProcessor::run(const RenderJob& job,
     produced += m;
     emit(m);
     if (progress) {
-      progress->store(std::min(1.0, static_cast<double>(inPos) / inTotal));
+      progress->store(p0 + (p1 - p0) * std::min(1.0, static_cast<double>(inPos) / inTotal));
     }
   }
   if (!cancelled.load() && produced < total) {
@@ -179,11 +271,10 @@ RenderState DspProcessor::run(const RenderJob& job,
     const size_t n = std::min<uint64_t>(zeros.size(), outLen - out.frames());
     out.write(zeros.data(), n);
   }
-  if (!out.close() || std::rename(tmp.c_str(), job.output.c_str()) != 0) {
+  if (!out.close() || std::rename(tmp.c_str(), output.c_str()) != 0) {
     std::remove(tmp.c_str());
     return kRenderFailed;
   }
-  if (progress) progress->store(1.0);
   return kRenderDone;
 }
 

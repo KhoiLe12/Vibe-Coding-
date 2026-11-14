@@ -24,6 +24,7 @@ void main(List<String> args) async {
       sources: [
         'src/engine.cpp',
         'src/dsp_processor.cpp',
+        'src/exporter.cpp',
         'src/latency_probe.cpp',
         'src/looper.cpp',
         'src/player.cpp',

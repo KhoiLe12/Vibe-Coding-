@@ -4,6 +4,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocket_audio/pocket_audio.dart' show PlayClip;
 import 'package:pocket_studio/edit/edit_list.dart';
 import 'package:pocket_studio/edit/render_cache.dart';
 
@@ -46,7 +47,7 @@ void main() {
   test('clips map into render frames by the tempo', () {
     const r = Render('x', 24000, 120000, tune);
     final e = EditList([const Clip(48000, 72000)], tune: tune);
-    expect(r.clipsFor(e).single, (start: 19200, end: 38400, gain: 1.0));
+    expect(r.clipsFor(e).single, const PlayClip(19200, 38400));
   });
 
   test('deleteFor and trim keep the cache tidy', () {

@@ -87,6 +87,7 @@ class _StackScreenState extends State<StackScreen> {
   void initState() {
     super.initState();
     _history = History(widget.stack);
+    _playerToken = AudioControl.claimPlayer();
     PocketAudio.openStack();
     AudioControl.ensureOutput(); // play retries if iOS refuses right now
     _lifecycle = AppLifecycleListener(
@@ -100,13 +101,16 @@ class _StackScreenState extends State<StackScreen> {
 
   late final AppLifecycleListener _lifecycle;
 
+  /// This screen's claim on the player; re-claimed after the take editor
+  /// (which claims it while open) is popped.
+  late int _playerToken;
+
   @override
   void dispose() {
     _lifecycle.dispose();
     _ticker?.cancel();
     if (PocketAudio.isRecording) PocketAudio.endRecording();
-    PocketAudio.closeTake();
-    AudioControl.release();
+    AudioControl.releasePlayer(_playerToken);
     super.dispose();
   }
 
@@ -118,9 +122,7 @@ class _StackScreenState extends State<StackScreen> {
     final store = widget.store;
     final edits = store.loadEdits(take.id, take.frames);
     var path = take.wav.path;
-    var clips = [
-      for (final c in edits.clips) (start: c.start, end: c.end, gain: c.gain),
-    ];
+    var clips = [for (final c in edits.clips) c.toPlay()];
     var unrendered = false;
     if (!edits.tune.isIdentity) {
       final need = RenderCache.neededRange(edits, take.frames);
@@ -132,7 +134,7 @@ class _StackScreenState extends State<StackScreen> {
         unrendered = true;
       }
     }
-    final length = clips.fold<int>(0, (s, c) => s + c.end - c.start);
+    final length = clips.fold<int>(0, (s, c) => s + c.length);
     Peaks? peaks;
     try {
       peaks = timelinePeaks(await store.loadPeaks(take), edits);
@@ -414,7 +416,9 @@ class _StackScreenState extends State<StackScreen> {
       ),
     );
     if (!mounted) return;
-    // The editor closed the player and released the engine: reopen both.
+    // Take the player back from the editor (its dispose comes later and
+    // leaves a player it no longer owns alone) and reopen the stack.
+    _playerToken = AudioControl.claimPlayer();
     AudioControl.useOutput();
     PocketAudio.openStack();
     final fresh = widget.store.takeById(take.id);
@@ -464,6 +468,7 @@ class _StackScreenState extends State<StackScreen> {
       ),
     );
     if (!mounted) return;
+    _playerToken = AudioControl.claimPlayer();
     AudioControl.useOutput();
     PocketAudio.openStack();
     await _rebuild();
