@@ -33,7 +33,9 @@ Each milestone ends with: build workflow → lint pass → log entry.
 | M9+ | Backlog | Driven by raw/feedback/ |
 
 ## Current state
-**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **M2 in progress:** iOS latency gate **passed** 2026-11-14 (22.1 ms, drift 0; [[d010-duplex-buffer-size]]). Remaining: tape-style scrub ([[d009-scrub-style]]), hold-to-rewind, zoom, loop region ([[playback-and-scrub]]).
+**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **Milestone 2 done on iOS** (2026-11-14): latency gate passed (22.1 ms, drift 0; [[d010-duplex-buffer-size]]); tape-style scrub ([[d009-scrub-style]]), hold-to-rewind/fast-forward, zoom, A–B loops ([[playback-and-scrub]]) verified on the iPhone. **Next: M3 — chop** ([[chop]], [[edit-model]], [[undo-history]]).
+
+- [ ] Android half of the M2 latency gate (no device)
 
 **Android: built by CI, not verified on a device.** No Android phone is available (2026-11-13). Android stays a target ([[d001-platform-and-stack]] unchanged): CI keeps the APK compiling, and the open Android checks below are done whenever a phone turns up.
 - [ ] Hello tone on a real Android phone (M0)

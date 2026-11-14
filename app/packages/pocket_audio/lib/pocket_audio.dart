@@ -251,6 +251,25 @@ abstract final class PocketAudio {
   static int get playbackPosition => bindings.ps_player_position();
   static int get takeLength => bindings.ps_player_length();
 
+  /// A–B loop (end exclusive); `end <= start` turns it off.
+  static void setLoop(int start, int end) =>
+      bindings.ps_player_set_loop(start, end);
+  static void clearLoop() => bindings.ps_player_set_loop(0, 0);
+  static ({int start, int end})? get loop {
+    final s = bindings.ps_player_loop_start(), e = bindings.ps_player_loop_end();
+    return e > s ? (start: s, end: e) : null;
+  }
+
+  /// Tape-style scrubbing: between [beginScrub] and [endScrub] the playhead
+  /// chases [scrubTarget] (speed and pitch follow it), or moves at [shuttle]
+  /// × real time when that is non-zero.
+  static void beginScrub() => bindings.ps_player_begin_scrub();
+  static set scrubTarget(double frame) =>
+      bindings.ps_player_set_scrub_target(frame);
+  static set shuttle(double speed) => bindings.ps_player_set_shuttle(speed);
+  static void endScrub() => bindings.ps_player_end_scrub();
+  static bool get isScrubbing => bindings.ps_player_is_scrubbing() != 0;
+
   /// Runs the player's audio-thread code without a device (tests only).
   static Float32List renderPlayerOffline(int frames, {int channels = 2}) {
     final buffer = calloc<ffi.Float>(frames * channels);

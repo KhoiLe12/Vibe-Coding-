@@ -151,10 +151,11 @@ PS_EXPORT int32_t ps_recorder_copy_peaks(float* out, int32_t first_block,
                                          int32_t max_blocks);
 PS_EXPORT int32_t ps_recorder_peak_block_count(void);
 
-// ---- Player (M1) ---------------------------------------------------------
-// Streams one take from disk, mixed into the engine output. Play/pause ramp
-// over ~5 ms (no clicks). Takes cut short by a crash play in full: the length
-// comes from the file size when the header lags.
+// ---- Player (M1/M2) ------------------------------------------------------
+// Plays one take from a read-only memory map (random access), mixed into the
+// engine output. Play/pause ramp over 5 ms; seeks while audible crossfade
+// (no clicks). Takes cut short by a crash play in full: the length comes from
+// the file size when the header lags.
 
 // Opens a take (mono 32-bit float WAV), paused at frame 0. Closes any
 // previous take. Returns PS_OK or PS_ERROR_FILE.
@@ -164,9 +165,27 @@ PS_EXPORT void ps_player_set_playing(int32_t playing);
 PS_EXPORT int32_t ps_player_is_playing(void);
 // 1 once playback reached the end (playing turns 0). Cleared by seek/open.
 PS_EXPORT int32_t ps_player_finished(void);
+// Jumps to frame on the next callback (crossfades if audible).
 PS_EXPORT int32_t ps_player_seek(int64_t frame);
 PS_EXPORT int64_t ps_player_position(void);
 PS_EXPORT int64_t ps_player_length(void);
+
+// A–B loop, end exclusive. Wraps are 5 ms crossfades with the loop period
+// exactly end - start. end <= start (or a loop under 10 ms) turns it off.
+PS_EXPORT void ps_player_set_loop(int64_t start, int64_t end);
+PS_EXPORT int64_t ps_player_loop_start(void);
+PS_EXPORT int64_t ps_player_loop_end(void);
+
+// Tape-style scrubbing (wiki/decisions/d009-scrub-style.md). Between begin
+// and end, the playhead chases the target frame with smoothed velocity (speed
+// and pitch follow the finger), or moves at the shuttle speed if non-zero
+// (multiples of real time; negative = backwards). end_scrub continues from
+// where it stopped, playing again if it was playing before.
+PS_EXPORT void ps_player_begin_scrub(void);
+PS_EXPORT void ps_player_set_scrub_target(double frame);
+PS_EXPORT void ps_player_set_shuttle(double speed);
+PS_EXPORT void ps_player_end_scrub(void);
+PS_EXPORT int32_t ps_player_is_scrubbing(void);
 
 // Runs the player's audio-thread code into out (zeroed first) without a
 // device. For tests; do not call while the engine is running.

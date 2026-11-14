@@ -21,6 +21,7 @@ abstract final class AudioControl {
   /// gate with miniaudio on iOS (22 ms round trip; wiki/decisions/
   /// d010-duplex-buffer-size.md). [periodFrames] overrides it (Latency screen).
   static const duplexPeriodFrames = 64;
+  static const playbackPeriodFrames = 256;
 
   static void useInput({int periodFrames = duplexPeriodFrames}) {
     if (PocketAudio.isRunning && PocketAudio.hasInput) return;
@@ -33,7 +34,9 @@ abstract final class AudioControl {
   static void useOutput() {
     if (PocketAudio.isRunning && !PocketAudio.hasInput) return;
     PocketAudio.stop();
-    PocketAudio.periodFrames = 0; // default 10 ms: playback only, saves battery
+    // 256 frames (5.3 ms): keeps tap → sound well under the M2 50 ms
+    // criterion (≈ 3 periods + ~10 ms hardware); still light on battery.
+    PocketAudio.periodFrames = playbackPeriodFrames;
     PocketAudio.start();
   }
 

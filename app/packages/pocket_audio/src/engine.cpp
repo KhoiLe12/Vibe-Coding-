@@ -289,6 +289,20 @@ int32_t ps_player_seek(int64_t frame) { return g_player.seek(frame); }
 int64_t ps_player_position(void) { return g_player.position(); }
 int64_t ps_player_length(void) { return g_player.length(); }
 
+void ps_player_set_loop(int64_t start, int64_t end) {
+  g_player.setLoop(start, end);
+}
+int64_t ps_player_loop_start(void) { return g_player.loopStart(); }
+int64_t ps_player_loop_end(void) { return g_player.loopEnd(); }
+
+void ps_player_begin_scrub(void) { g_player.beginScrub(); }
+void ps_player_set_scrub_target(double frame) {
+  g_player.setScrubTarget(frame);
+}
+void ps_player_set_shuttle(double speed) { g_player.setShuttle(speed); }
+void ps_player_end_scrub(void) { g_player.endScrub(); }
+int32_t ps_player_is_scrubbing(void) { return g_player.scrubbing() ? 1 : 0; }
+
 void ps_player_render_offline(float* out, int32_t frames, int32_t channels) {
   if (!out || frames <= 0 || channels <= 0) return;
   std::fill(out, out + static_cast<size_t>(frames) * channels, 0.0f);

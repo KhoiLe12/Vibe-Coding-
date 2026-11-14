@@ -187,6 +187,7 @@ external int ps_player_is_playing();
 @ffi.Native<ffi.Int32 Function()>()
 external int ps_player_finished();
 
+/// Jumps to frame on the next callback (crossfades if audible).
 @ffi.Native<ffi.Int32 Function(ffi.Int64)>()
 external int ps_player_seek(int frame);
 
@@ -195,6 +196,37 @@ external int ps_player_position();
 
 @ffi.Native<ffi.Int64 Function()>()
 external int ps_player_length();
+
+/// A–B loop, end exclusive. Wraps are 5 ms crossfades with the loop period
+/// exactly end - start. end <= start (or a loop under 10 ms) turns it off.
+@ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64)>()
+external void ps_player_set_loop(int start, int end);
+
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_player_loop_start();
+
+@ffi.Native<ffi.Int64 Function()>()
+external int ps_player_loop_end();
+
+/// Tape-style scrubbing (wiki/decisions/d009-scrub-style.md). Between begin
+/// and end, the playhead chases the target frame with smoothed velocity (speed
+/// and pitch follow the finger), or moves at the shuttle speed if non-zero
+/// (multiples of real time; negative = backwards). end_scrub continues from
+/// where it stopped, playing again if it was playing before.
+@ffi.Native<ffi.Void Function()>()
+external void ps_player_begin_scrub();
+
+@ffi.Native<ffi.Void Function(ffi.Double)>()
+external void ps_player_set_scrub_target(double frame);
+
+@ffi.Native<ffi.Void Function(ffi.Double)>()
+external void ps_player_set_shuttle(double speed);
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_player_end_scrub();
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_player_is_scrubbing();
 
 /// Runs the player's audio-thread code into out (zeroed first) without a
 /// device. For tests; do not call while the engine is running.

@@ -19,6 +19,12 @@ tags: [m2, playback]
 ## Choice
 Tape-style. The playhead's velocity sets a resampling rate on the audio thread, smoothed so speed changes never click ([[crossfades-and-clicks]]); this is the same machinery as [[varispeed]].
 
+## Update 2026-11-14 (human feedback on the iPhone)
+First build mapped the finger's **screen position** to a frame. Zoomed out on a 30-min take one pixel is seconds of audio, so even slow drags hit the 8× limit (unintelligible), the tape lagged far behind the finger, and on release the playhead jumped to the finger. Fixes, keeping tape-style:
+- Scrub is **relative**: the drag moves the tape from where it was, at **min(view frames per pixel, 480 frames = 10 ms per pixel)**, so an unhurried drag (~100 px/s) plays near real time at any zoom; zoomed in closer, the needle stays under the finger.
+- **On release the playhead stays where the tape is** (what was last heard), not at the finger.
+- If slow tape-style scrubbing is still too hard to follow, the fallback is snippet-style or a pitch-preserving slow scrub — a new decision for the human.
+
 ## Consequences
 - Needs random access around the playhead in both directions, so scrubbing reads from a window around the position rather than the forward-only stream used for normal play ([[audio-engine]]).
 - Resampling quality matters only for preview; export and normal playback are unaffected.

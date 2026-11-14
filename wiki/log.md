@@ -114,3 +114,18 @@
 ## [2026-11-14] build | Recording re-checked at 64-frame buffers
 - pages touched: [[d010-duplex-buffer-size]]
 - notes: Human recorded several minutes (incl. locked phone) at 64 frames: no lost audio, clean playback.
+
+## [2026-11-14] build | M2 navigation: mapped player, tape scrub, shuttle, loops, zoom
+- pages touched: [[d011-mapped-player]], [[d010-duplex-buffer-size]], [[audio-engine]], [[waveform-view]], [[playback-and-scrub]], [[index]]
+- notes: Player rebuilt on mmap + prefetch. 37 core tests (loop period exact, no clicks at wraps/seeks, scrub without overshoot —
+  found and fixed an underdamped chase). Take screen gestures. Playback buffers 512→256 for the 50 ms start criterion. CI green for 6a57282.
+
+## [2026-11-14] build | Scrub reworked after iPhone feedback
+- pages touched: [[d009-scrub-style]], [[playback-and-scrub]]
+- notes: Absolute finger→frame mapping made zoomed-out scrubs race at 8× and jump on release. Now relative with a 10 ms/px cap,
+  and release stays where the tape is. 38 core tests pass.
+
+## [2026-11-14] build | M2 done on iOS
+- pages touched: [[playback-and-scrub]], [[overview]]
+- notes: Human confirmed reworked scrub (clear at ~real-time drags, stays put on release); all M2 criteria ticked
+  (start latency is an estimate, noted). Android gate half stays open.

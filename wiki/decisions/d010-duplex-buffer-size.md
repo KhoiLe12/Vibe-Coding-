@@ -19,7 +19,7 @@ The M2 go/no-go gate ([[d001-platform-and-stack]], [[d008-latency-gate-route]]) 
 ## Choice
 - **iOS stays on miniaudio** (gate passed, 2026-11-14).
 - **Mic open (Record, Latency, later the loop pedal): 64-frame periods** (≈ 1.3 ms; `AudioControl.duplexPeriodFrames`).
-- **Playback only: miniaudio's default** (10 ms) — latency doesn't matter there and it saves battery.
+- **Playback only: 256-frame periods** (5.3 ms). *Changed 2026-11-14 from miniaudio's 10 ms default:* the M2 criterion "playhead starts within 50 ms of tap" was borderline at 512×3 (~42–53 ms estimated); 256×3 gives ~26–31 ms.
 
 ## Consequences
 - **Margin is ~8 ms**, and 64 frames means ~750 audio callbacks a second. Real-time work added later (looper mixing in M5) must stay light, or this decision gets revisited (option 2).

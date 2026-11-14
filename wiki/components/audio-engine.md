@@ -17,7 +17,7 @@ Owns the device, the record tap, playback of the rendered edit list, and the tra
 - *iOS session* is owned by `platform_apple.mm`, not miniaudio: PlayAndRecord + **measurement mode** (no voice processing, [[recording-diverse-material]]) + DefaultToSpeaker + AllowBluetoothA2DP; Playback when output-only. Mic permission via AVAudioApplication (iOS 17+) / AVAudioSession. Background recording via `UIBackgroundModes: audio`.
 - *Interruptions* (calls, Siri): Core Audio stops the device; on interruption-ended the engine reactivates the session and restarts it. A take in progress keeps going with a gap; the Record screen tells the user.
 - *Android:* AAudio input preset UNPROCESSED, falling back to VOICE_RECOGNITION if the device refuses. Permission and a `microphone`-type foreground service live in the app shell (`MainActivity.kt`, `RecordingService.kt`). **Unverified — no Android phone yet.**
-- *Player:* streams one take from disk via a reader thread and a lock-free ring (2^17 floats ≈ 2.7 s), mixed into the output on every channel. Play/pause ramp over 5 ms ([[crossfades-and-clicks]]). Length comes from the file size when the header lags, so a crash-cut take plays in full. Seek restarts the reader (M2 will refine, [[playback-and-scrub]]).
+- *Player (M2, [[d011-mapped-player]]):* the take is memory-mapped read-only and a prefetch thread keeps ±2–4 s around the playhead resident. Normal mode: play/pause ramp 5 ms; seeks crossfade when audible and land on the next callback; A–B loops wrap with a 5 ms crossfade and an exact period. Scrub mode ([[d009-scrub-style]]): the playhead chases the finger target (80 ms chase, 15 ms velocity smoothing — overdamped so it never overshoots; max 8×), 4-point Hermite interpolation, output fades out below 0.25× like tape stopping; shuttle drives the speed directly (hold ⏪/⏩ = ±4×). Length comes from the file size, so crash-cut takes play in full.
 - *Input stage* (audio thread): smoothed input gain (~5 ms one-pole, snaps to target within 0.01% so unity stays bit-exact), peak level meter, sticky clip flag. Runs on every input buffer, recording or not.
 - *Recorder:* while a take is recording and not paused, the audio thread copies post-gain samples into a lock-free SPSC ring (2^19 floats ≈ 10.9 s). A writer thread drains it every 10 ms into a mono 32-bit float WAV ([[d007-recording-format]]), builds min/max peaks per 256 frames ([[waveform-rendering]]) and patches the WAV header after each new second of audio, so a crash loses at most ~1 s. Ring overflow is counted as dropped frames (target: 0).
 - *Peaks file* (`peaks/*.bin`, [[storage]]): `"PSPK"` · u32 version 1 · u32 block frames (256) · u32 block count · count × (f32 min, f32 max), little-endian.
@@ -43,6 +43,8 @@ C API in `app/packages/pocket_audio/src/pocket_audio.h`, wrapped by the Dart cla
 | `ps_engine_interruption_count` | `interruptionCount` | OS interruptions since launch |
 | `ps_mic_permission` / `ps_mic_request_permission` | `micPermission`, `requestMicPermission()` | `PS_MIC_UNDETERMINED/GRANTED/DENIED`; Android reports granted (shell asks) |
 | `ps_player_open/close/set_playing/is_playing/finished/seek/position/length` | `openTake()`, `closeTake()`, `playing`, `isPlaying`, `playbackFinished`, `seek()`, `playbackPosition`, `takeLength` | one take at a time |
+| `ps_player_set_loop` / `loop_start` / `loop_end` | `setLoop()`, `clearLoop()`, `loop` | end exclusive; < 10 ms clears |
+| `ps_player_begin_scrub` / `set_scrub_target` / `set_shuttle` / `end_scrub` / `is_scrubbing` | `beginScrub()`, `scrubTarget`, `shuttle`, `endScrub()`, `isScrubbing` | tape-style; end resumes play if it was playing |
 | `ps_player_render_offline` | `renderPlayerOffline()` | tests: player's audio-thread code without a device |
 | `ps_peaks_build(wav, peaks)` | `buildPeaks()` | rebuild peaks after a crash; run off the UI thread |
 | `ps_latency_start/stop/is_running/count/missed/input_overflow/copy_ms` | `startLatencyProbe()`, `stopLatencyProbe()`, `latencyCount`, `latencyMissed`, `latencyResults()` … | M2 gate probe ([[audio-latency]]) |
@@ -58,7 +60,7 @@ Threading: control calls take a mutex that the audio callback never touches; the
 - `app/packages/pocket_audio/src/ring_buffer.h` — lock-free SPSC float ring
 - `app/packages/pocket_audio/src/wav_writer.h` / `wav_writer.cpp` — streaming float WAV writer, crash-safe header
 - `app/packages/pocket_audio/src/recorder.h` / `recorder.cpp` — input stage, recorder, writer thread, peaks
-- `app/packages/pocket_audio/src/player.h` / `player.cpp` — streaming take player, WAV probe, peaks rebuild
+- `app/packages/pocket_audio/src/player.h` / `player.cpp` — memory-mapped take player (play, seek, loop, scrub, shuttle), WAV probe, peaks rebuild
 - `app/packages/pocket_audio/src/latency_probe.h` / `latency_probe.cpp` — chirp round-trip probe (M2 gate)
 - `app/lib/screens/latency_screen.dart` — Latency test screen (quick 15 s / full 10 min)
 - `app/packages/pocket_audio/src/platform.h`, `platform_apple.mm`, `platform_other.cpp` — iOS audio session + mic permission; no-ops elsewhere
@@ -69,7 +71,7 @@ Threading: control calls take a mutex that the audio callback never touches; the
 - `app/packages/pocket_audio/src/third_party/miniaudio/` — vendored miniaudio 0.11.25
 - `app/packages/pocket_audio/hook/build.dart` — native build ([[d006-native-build]])
 - `app/packages/pocket_audio/lib/pocket_audio_bindings_generated.dart` — generated bindings
-- `app/packages/pocket_audio/test/` — offline tone tests; `recorder_test.dart` (bit-exact WAV + peaks, pause/resume, crash-safe header, gain/meter/clip, 30-min run at 100× real time); `player_test.dart` (fade-in, pause holds position, end/finished, seek, crash-cut take, rebuilt peaks); `engine_device_test.dart` (tag `device`, skipped by default: output callbacks + 2 s real-mic take). Test files run one at a time (`dart_test.yaml`: the engine is process-global).
+- `app/packages/pocket_audio/test/` — offline tone tests; `recorder_test.dart` (bit-exact WAV + peaks, pause/resume, crash-safe header, gain/meter/clip, 30-min run at 100× real time); `player_test.dart` (fade-in, pause holds position, end/finished, seek, crash-cut take, rebuilt peaks); `navigation_test.dart` (loop period exact + click-free wrap, click-free seek, scrub forward/back without overshoot, resume after scrub, shuttle); `latency_test.dart`; `engine_device_test.dart` (tag `device`, skipped by default: output callbacks + 2 s real-mic take). Test files run one at a time (`dart_test.yaml`: the engine is process-global).
 - `app/lib/main.dart` — M0 hello-tone screen + Licences screen
 
 ## Dependencies

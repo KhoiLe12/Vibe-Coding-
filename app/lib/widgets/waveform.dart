@@ -6,8 +6,8 @@
 // aggregated from the cached peaks — never from raw samples.
 
 import 'dart:math' as math;
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 class WaveformPainter extends CustomPainter {
@@ -18,8 +18,13 @@ class WaveformPainter extends CustomPainter {
     required this.color,
     this.playhead,
     this.playheadColor,
+    this.bands = const [],
     this.revision = 0,
   });
+
+  /// Shaded spans behind the waveform, as fractions of the window (0..1):
+  /// loop selection, or the visible window on an overview strip.
+  final List<({double from, double to, Color color})> bands;
 
   /// Interleaved (min, max) pairs.
   final Float32List minMax;
@@ -39,6 +44,16 @@ class WaveformPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    for (final b in bands) {
+      final l = b.from.clamp(0.0, 1.0) * size.width;
+      final r = b.to.clamp(0.0, 1.0) * size.width;
+      if (r > l) {
+        canvas.drawRect(
+          Rect.fromLTRB(l, 0, r, size.height),
+          Paint()..color = b.color,
+        );
+      }
+    }
     final mid = size.height / 2;
     final half = size.height / 2 * 0.95;
     final paint = Paint()
@@ -92,6 +107,7 @@ class WaveformPainter extends CustomPainter {
       old.firstBlock != firstBlock ||
       old.blockCount != blockCount ||
       old.playhead != playhead ||
+      !listEquals(old.bands, bands) ||
       old.color != color;
 }
 
