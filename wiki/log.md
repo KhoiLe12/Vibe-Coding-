@@ -310,3 +310,8 @@
 - pages touched: [[overview]], [[beat-grid]]
 - notes: Human: "i think the app is done". README rewritten for users: overview, features, how to use each screen,
   install on iPhone (Xcode signing, free Apple ID 7-day limit) and Android (CI debug APK, untested). M8/M9 not started.
+
+## [2026-11-14] build | README: demo video placeholder and "How I used Claude"
+- pages touched: (README only)
+- notes: Class assignment needs Claude usage (steps, what worked, what didn't) and a demo video link in the README. Facts taken
+  from the wiki log, decision pages and git history. Video link to be added by the human.
