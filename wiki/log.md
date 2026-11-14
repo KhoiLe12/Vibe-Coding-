@@ -129,3 +129,22 @@
 - pages touched: [[playback-and-scrub]], [[overview]]
 - notes: Human confirmed reworked scrub (clear at ~real-time drags, stays put on release); all M2 criteria ticked
   (start latency is an estimate, noted). Android gate half stays open.
+
+## [2026-11-14] decision | M3 chop model
+- pages touched: [[d012-chop-model]], [[chop]], [[index]]
+- notes: Human chose edit-in-place (with revert). Snapshot undo, 10 ms equal-power joins, ±5 ms zero-crossing snap, clip list saved per take.
+
+## [2026-11-14] build | M3 chop built
+- pages touched: [[edit-model]], [[audio-engine]], [[storage]], [[chop]]
+- notes: Timeline playback with 10 ms equal-power joins and zero-crossing snap; EditList/EditHistory; per-take edits JSON;
+  take screen editing UI. 45 core + 15 app tests pass. Installed on iPhone for checking.
+
+## [2026-11-14] build | M3 iPhone check + usability fixes
+- pages touched: [[chop]]
+- notes: Human: no clicks, undo/redo correct, live edits smooth, edits persist. Added jump-to-selection-start, block selection
+  via the clip strip, zoom-out on duplicate; fixed the zoom state after undo/trim/duplicate.
+
+## [2026-11-14] build | M3 done on iOS
+- pages touched: [[chop]], [[undo-history]], [[overview]]
+- notes: Human confirmed the usability fixes (zoom after trim/undo, block selection, jump to start). Both chop criteria ticked;
+  undo-history gained criteria (session undo ✓, persisted history → M7).

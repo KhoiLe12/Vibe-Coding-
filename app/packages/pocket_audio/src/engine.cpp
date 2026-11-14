@@ -289,6 +289,16 @@ int32_t ps_player_seek(int64_t frame) { return g_player.seek(frame); }
 int64_t ps_player_position(void) { return g_player.position(); }
 int64_t ps_player_length(void) { return g_player.length(); }
 
+int64_t ps_player_set_clips(const int64_t* src_starts, const int64_t* src_ends,
+                            const float* gains, int32_t count) {
+  if (count > 0 && (!src_starts || !src_ends)) return -1;
+  return g_player.setClips(src_starts, src_ends, gains, count);
+}
+
+int64_t ps_player_zero_crossing(int64_t src_frame, int32_t radius) {
+  return g_player.zeroCrossing(src_frame, radius);
+}
+
 void ps_player_set_loop(int64_t start, int64_t end) {
   g_player.setLoop(start, end);
 }

@@ -170,6 +170,20 @@ PS_EXPORT int32_t ps_player_seek(int64_t frame);
 PS_EXPORT int64_t ps_player_position(void);
 PS_EXPORT int64_t ps_player_length(void);
 
+// Edit list (M3, wiki/decisions/d012-chop-model.md): count clips, each
+// [src_starts[i], src_ends[i]) of the open take with linear gain gains[i]
+// (gains may be NULL = 1). count 0 plays the whole recording. Joins are
+// 10 ms equal-power crossfades. All player positions, loops and scrubbing are
+// in timeline frames. Returns the new timeline length (-1 on bad arguments).
+// Fade out playback before calling while audible; then seek.
+PS_EXPORT int64_t ps_player_set_clips(const int64_t* src_starts,
+                                      const int64_t* src_ends,
+                                      const float* gains, int32_t count);
+
+// Nearest zero crossing in the open take's recording within ±radius frames
+// of src_frame, or src_frame if there is none (used to snap cuts).
+PS_EXPORT int64_t ps_player_zero_crossing(int64_t src_frame, int32_t radius);
+
 // A–B loop, end exclusive. Wraps are 5 ms crossfades with the loop period
 // exactly end - start. end <= start (or a loop under 10 ms) turns it off.
 PS_EXPORT void ps_player_set_loop(int64_t start, int64_t end);

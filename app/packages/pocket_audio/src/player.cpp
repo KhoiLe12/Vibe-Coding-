@@ -139,31 +139,135 @@ Player::Player() = default;
 
 Player::~Player() { close(); }
 
-float Player::sampleAt(int64_t i) const {
+float Player::srcAt(int64_t i) const {
   if (i < 0 || i >= frames_) return 0.0f;
   float s;
   std::memcpy(&s, samples_ + 4 * i, 4);  // data starts at byte 58: unaligned
   return s;
 }
 
-float Player::interp(double pos) const {
+float Player::timelineAt(const Timeline* tl, int64_t t) const {
+  if (t < 0 || t >= tl->length || tl->clips.empty()) return 0.0f;
+  const auto& clips = tl->clips;
+  // Last clip starting at or before t.
+  size_t lo = 0, hi = clips.size();
+  while (hi - lo > 1) {
+    const size_t mid = (lo + hi) / 2;
+    if (clips[mid].tStart <= t) lo = mid; else hi = mid;
+  }
+  const TimelineClip& c = clips[lo];
+  // Join crossfade: centred on the join, `half` frames either side. The
+  // outgoing clip runs past its end, the incoming one starts early.
+  auto mix = [&](const TimelineClip& a, const TimelineClip& b) {
+    const int64_t join = b.tStart;
+    const float u = (static_cast<float>(t - (join - b.half)) + 0.5f) /
+                    static_cast<float>(2 * b.half);
+    constexpr float kHalfPi = 1.57079632679f;
+    const float va = srcAt(a.srcEnd + (t - join)) * a.gain;
+    const float vb = srcAt(b.srcStart + (t - join)) * b.gain;
+    return va * std::cos(u * kHalfPi) + vb * std::sin(u * kHalfPi);
+  };
+  if (lo + 1 < clips.size()) {
+    const TimelineClip& n = clips[lo + 1];
+    if (t >= n.tStart - n.half) return mix(c, n);
+  }
+  if (lo > 0 && t < c.tStart + c.half) return mix(clips[lo - 1], c);
+  return srcAt(c.srcStart + (t - c.tStart)) * c.gain;
+}
+
+float Player::interp(const Timeline* tl, double pos) const {
   const double fl = std::floor(pos);
   const int64_t i = static_cast<int64_t>(fl);
   const float t = static_cast<float>(pos - fl);
-  const float y0 = sampleAt(i - 1), y1 = sampleAt(i), y2 = sampleAt(i + 1),
-              y3 = sampleAt(i + 2);
+  const float y0 = timelineAt(tl, i - 1), y1 = timelineAt(tl, i),
+              y2 = timelineAt(tl, i + 1), y3 = timelineAt(tl, i + 2);
   const float c1 = 0.5f * (y2 - y0);
   const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
   const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
   return ((c3 * t + c2) * t + c1) * t + y1;
 }
 
+Timeline* Player::buildTimeline(const int64_t* s, const int64_t* e,
+                                const float* g, int32_t n) const {
+  auto* tl = new Timeline();
+  if (n <= 0) {
+    if (frames_ > 0) tl->clips.push_back({0, frames_, 0, 1.0f, 0});
+  } else {
+    tl->clips.reserve(static_cast<size_t>(n));
+    for (int32_t i = 0; i < n; ++i) {
+      const int64_t a = std::clamp<int64_t>(s[i], 0, frames_);
+      const int64_t b = std::clamp<int64_t>(e[i], 0, frames_);
+      if (b > a) tl->clips.push_back({a, b, 0, g ? g[i] : 1.0f, 0});
+    }
+  }
+  int64_t t = 0;
+  for (size_t i = 0; i < tl->clips.size(); ++i) {
+    TimelineClip& c = tl->clips[i];
+    c.tStart = t;
+    if (i > 0) {
+      const TimelineClip& p = tl->clips[i - 1];
+      c.half = std::min<int64_t>({kJoinHalfFrames, (p.srcEnd - p.srcStart) / 2,
+                                  (c.srcEnd - c.srcStart) / 2});
+      // Adjacent pieces of the recording need no crossfade.
+      if (p.srcEnd == c.srcStart && p.gain == c.gain) c.half = 0;
+    }
+    t += c.srcEnd - c.srcStart;
+  }
+  tl->length = t;
+  return tl;
+}
+
+int64_t Player::setClips(const int64_t* srcStarts, const int64_t* srcEnds,
+                         const float* gains, int32_t n) {
+  std::lock_guard<std::mutex> lock(controlMutex_);
+  if (!map_) return 0;
+  Timeline* fresh = buildTimeline(srcStarts, srcEnds, gains, n);
+  Timeline* old;
+  {
+    std::lock_guard<std::mutex> tlock(timelineMutex_);
+    old = timeline_.exchange(fresh);
+    length_.store(fresh->length);
+  }
+  // A render that loaded `old` may still be running; once inRender_ is seen
+  // at 0, every later render uses `fresh`.
+  while (inRender_.load() != 0) std::this_thread::yield();
+  delete old;
+  // Keep loop and position inside the new timeline.
+  if (loopEnd_.load() > fresh->length) setLoop(0, 0);
+  if (position_.load() > fresh->length) seek(fresh->length);
+  return fresh->length;
+}
+
+int64_t Player::zeroCrossing(int64_t srcFrame, int32_t radius) const {
+  if (!samples_ || frames_ < 2) return srcFrame;
+  for (int32_t d = 0; d <= radius; ++d) {
+    for (const int64_t k : {srcFrame + d, srcFrame - d}) {
+      if (k <= 0 || k >= frames_) continue;
+      const float a = srcAt(k - 1), b = srcAt(k);
+      if (b == 0.0f || (a < 0.0f) != (b < 0.0f)) return k;
+    }
+  }
+  return srcFrame;
+}
+
+int64_t Player::sourceFrameAt(int64_t t) {
+  std::lock_guard<std::mutex> lock(timelineMutex_);
+  const Timeline* tl = timeline_.load();
+  if (!tl || t < 0 || t >= tl->length) return -1;
+  for (const auto& c : tl->clips) {
+    if (t < c.tStart + (c.srcEnd - c.srcStart)) return c.srcStart + (t - c.tStart);
+  }
+  return -1;
+}
+
 void Player::render(float* out, uint32_t frames, uint32_t channels) {
   inRender_.fetch_add(1);
-  if (!active_.load()) {
+  const Timeline* tl = timeline_.load(std::memory_order_acquire);
+  if (!active_.load() || tl == nullptr) {
     inRender_.fetch_sub(1);
     return;
   }
+  const int64_t length = tl->length;
 
   // ---- control changes, once per callback ----
   const bool wantScrub = scrubRequested_.load();
@@ -203,7 +307,7 @@ void Player::render(float* out, uint32_t frames, uint32_t channels) {
       xfadeT_ = 0;
       playGain_ = 0.0f;  // new position fades in
     }
-    pos_ = static_cast<double>(std::min<int64_t>(req, frames_));
+    pos_ = static_cast<double>(std::min<int64_t>(req, length));
     finished_.store(false);
   }
 
@@ -217,18 +321,18 @@ void Player::render(float* out, uint32_t frames, uint32_t channels) {
               : std::clamp((target - pos_) / kChaseFrames, -kMaxSpeed, kMaxSpeed);
       velocity_ += (want - velocity_) * kVelocityAlpha;
       pos_ += velocity_;
-      if (pos_ < 0.0 || pos_ > static_cast<double>(frames_ - 1)) {
-        pos_ = std::clamp(pos_, 0.0, std::max(0.0, static_cast<double>(frames_ - 1)));
+      if (pos_ < 0.0 || pos_ > static_cast<double>(length - 1)) {
+        pos_ = std::clamp(pos_, 0.0, std::max(0.0, static_cast<double>(length - 1)));
         velocity_ = 0.0;
       }
       if (scrubGain_ < 1.0f) scrubGain_ = std::min(1.0f, scrubGain_ + kRampStep);
       const float amp = scrubGain_ *
                         static_cast<float>(std::min(1.0, std::fabs(velocity_) /
                                                              kQuietSpeed));
-      float s = interp(pos_) * amp;
+      float s = interp(tl, pos_) * amp;
       if (xfade_) {
         const float w = static_cast<float>(xfadeT_) / kFadeFrames;
-        s += sampleAt(static_cast<int64_t>(fromPos_)) * fromGain_ * (1.0f - w);
+        s += timelineAt(tl, static_cast<int64_t>(fromPos_)) * fromGain_ * (1.0f - w);
         fromPos_ += 1.0;
         if (++xfadeT_ >= kFadeFrames) xfade_ = false;
       }
@@ -272,19 +376,19 @@ void Player::render(float* out, uint32_t frames, uint32_t channels) {
     float inGain = playGain_;
     if (xfade_) {
       const float w = static_cast<float>(xfadeT_) / kFadeFrames;
-      s += sampleAt(static_cast<int64_t>(fromPos_)) * fromGain_ * (1.0f - w);
+      s += timelineAt(tl, static_cast<int64_t>(fromPos_)) * fromGain_ * (1.0f - w);
       // A loop wrap fades the new stream in under the old; a seek's new
       // stream also gets the play ramp.
       inGain *= w;
       fromPos_ += 1.0;
       if (++xfadeT_ >= kFadeFrames) xfade_ = false;
     }
-    s += sampleAt(p) * inGain;
+    s += timelineAt(tl, p) * inGain;
     for (uint32_t c = 0; c < channels; ++c) out[i * channels + c] += s;
     if (playGain_ > 0.0f) pos_ += 1.0;
 
-    if (!looping && pos_ >= static_cast<double>(frames_)) {
-      pos_ = static_cast<double>(frames_);
+    if (!looping && pos_ >= static_cast<double>(length)) {
+      pos_ = static_cast<double>(length);
       playing_.store(false);
       finished_.store(true);
       playGain_ = 0.0f;
@@ -343,6 +447,7 @@ int32_t Player::open(const char* path) {
   playing_.store(false);
   finished_.store(false);
   position_.store(0);
+  timeline_.store(buildTimeline(nullptr, nullptr, nullptr, 0));
   length_.store(frames_);
 
   stopPrefetch_.store(false);
@@ -365,6 +470,10 @@ void Player::unmapLocked() {
   if (prefetch_.joinable()) {
     stopPrefetch_.store(true);
     prefetch_.join();
+  }
+  {
+    std::lock_guard<std::mutex> tlock(timelineMutex_);
+    delete timeline_.exchange(nullptr);
   }
   if (map_) ::munmap(const_cast<uint8_t*>(map_), mapBytes_);
   map_ = nullptr;
@@ -416,12 +525,18 @@ void Player::prefetchLoop() {
     a -= a % static_cast<size_t>(page);
     ::madvise(const_cast<uint8_t*>(base + a), b - a, MADV_WILLNEED);
   };
+  // Positions are timeline frames; prefetch the recording around where each
+  // one maps (edits rarely jump far, and a miss only costs a page read).
+  auto touchT = [&](int64_t t) {
+    const int64_t s = sourceFrameAt(t);
+    if (s >= 0) touch(s);
+  };
   while (!stopPrefetch_.load()) {
-    touch(position_.load());
+    touchT(position_.load());
     if (scrubRequested_.load()) {
-      touch(static_cast<int64_t>(scrubTarget_.load()));
+      touchT(static_cast<int64_t>(scrubTarget_.load()));
     }
-    if (loopEnd_.load() > loopStart_.load()) touch(loopStart_.load());
+    if (loopEnd_.load() > loopStart_.load()) touchT(loopStart_.load());
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
   }
 }

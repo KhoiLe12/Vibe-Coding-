@@ -197,6 +197,32 @@ external int ps_player_position();
 @ffi.Native<ffi.Int64 Function()>()
 external int ps_player_length();
 
+/// Edit list (M3, wiki/decisions/d012-chop-model.md): count clips, each
+/// [src_starts[i], src_ends[i]) of the open take with linear gain gains[i]
+/// (gains may be NULL = 1). count 0 plays the whole recording. Joins are
+/// 10 ms equal-power crossfades. All player positions, loops and scrubbing are
+/// in timeline frames. Returns the new timeline length (-1 on bad arguments).
+/// Fade out playback before calling while audible; then seek.
+@ffi.Native<
+  ffi.Int64 Function(
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Int32,
+  )
+>()
+external int ps_player_set_clips(
+  ffi.Pointer<ffi.Int64> src_starts,
+  ffi.Pointer<ffi.Int64> src_ends,
+  ffi.Pointer<ffi.Float> gains,
+  int count,
+);
+
+/// Nearest zero crossing in the open take's recording within ±radius frames
+/// of src_frame, or src_frame if there is none (used to snap cuts).
+@ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Int32)>()
+external int ps_player_zero_crossing(int src_frame, int radius);
+
 /// A–B loop, end exclusive. Wraps are 5 ms crossfades with the loop period
 /// exactly end - start. end <= start (or a loop under 10 ms) turns it off.
 @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64)>()

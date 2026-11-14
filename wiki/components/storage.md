@@ -18,4 +18,5 @@ App-private folder per project:
 M1: `app/lib/takes/take_store.dart`. Every take goes in one project, `<app documents>/projects/inbox/` (projects proper arrive in M7).
 - Take id = `take-YYYYMMDD-HHMMSS` (suffix `_2`, `_3` on collision); `sources/<id>.wav` per [[d007-recording-format]], `peaks/<id>.bin` (layout in [[audio-engine]]).
 - Length is read from the file size, so takes cut short by a crash are listed and play in full. Missing or short peaks are rebuilt from the WAV in a background isolate.
-- Deleting a take removes its WAV and peaks; nothing ever rewrites a recording ([[d003-non-destructive-model]]).
+- `edits/<id>.json` — the take's edit list ([[edit-model]]); absent = unedited. Written to a temp file and renamed (atomic). Unreadable or out-of-range lists fall back to the whole recording. The takes list shows the edited length and an "Edited" label.
+- Deleting a take removes its WAV, peaks and edits; nothing ever rewrites a recording ([[d003-non-destructive-model]]).

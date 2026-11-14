@@ -62,7 +62,8 @@ abstract final class PocketAudio {
     int capturePeriod,
     int capturePeriods,
     int sampleRate,
-  })? get bufferInfo {
+  })?
+  get bufferInfo {
     final p = calloc<ffi.Int32>(5);
     try {
       if (bindings.ps_engine_buffer_info(p) == 0) return null;
@@ -251,12 +252,46 @@ abstract final class PocketAudio {
   static int get playbackPosition => bindings.ps_player_position();
   static int get takeLength => bindings.ps_player_length();
 
+  /// Replaces the edit list with clips over the open take's recording
+  /// (`(start, end, gain)` in recording frames). Empty = the whole take.
+  /// Returns the timeline length.
+  static int setClips(List<({int start, int end, double gain})> clips) {
+    final n = clips.length;
+    if (n == 0) {
+      return bindings.ps_player_set_clips(
+        ffi.nullptr,
+        ffi.nullptr,
+        ffi.nullptr,
+        0,
+      );
+    }
+    final s = calloc<ffi.Int64>(n), e = calloc<ffi.Int64>(n);
+    final g = calloc<ffi.Float>(n);
+    try {
+      for (var i = 0; i < n; i++) {
+        s[i] = clips[i].start;
+        e[i] = clips[i].end;
+        g[i] = clips[i].gain;
+      }
+      return bindings.ps_player_set_clips(s, e, g, n);
+    } finally {
+      calloc.free(s);
+      calloc.free(e);
+      calloc.free(g);
+    }
+  }
+
+  /// Nearest zero crossing in the open take within ±[radius] frames.
+  static int zeroCrossing(int sourceFrame, {int radius = 240}) =>
+      bindings.ps_player_zero_crossing(sourceFrame, radius);
+
   /// A–B loop (end exclusive); `end <= start` turns it off.
   static void setLoop(int start, int end) =>
       bindings.ps_player_set_loop(start, end);
   static void clearLoop() => bindings.ps_player_set_loop(0, 0);
   static ({int start, int end})? get loop {
-    final s = bindings.ps_player_loop_start(), e = bindings.ps_player_loop_end();
+    final s = bindings.ps_player_loop_start(),
+        e = bindings.ps_player_loop_end();
     return e > s ? (start: s, end: e) : null;
   }
 

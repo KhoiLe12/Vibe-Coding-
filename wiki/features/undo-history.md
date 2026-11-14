@@ -1,7 +1,7 @@
 ---
 type: feature
 status: draft
-updated: 2026-10-26
+updated: 2026-11-14
 sources: [raw/plan/pocket-studio-plan.md]
 tags: [m3, editing]
 ---
@@ -14,4 +14,5 @@ Milestone M3 (persistence in M7).
 - History persists with the project ([[storage]]).
 
 ## Acceptance criteria
-_None defined in the plan yet — flagged for lint._ (M3 "done when" says every edit is undoable; M7 says a reopened project plays identically.)
+- [x] Every edit is undoable and redoable, unlimited within a session — M3, iPhone 2026-11-14 ([[d012-chop-model]]: snapshot history)
+- [ ] History survives closing and reopening (M7; until then only the current edit list is saved, [[storage]])

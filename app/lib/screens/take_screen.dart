@@ -1,13 +1,16 @@
 // Copyright 2026 The Pocket Studio Authors
 // SPDX-License-Identifier: Apache-2.0
 //
-// One take (wiki/features/playback-and-scrub.md):
+// One take (wiki/features/playback-and-scrub.md, wiki/features/chop.md):
 // - one finger drag: tape-style scrub, relative to the playhead, speed capped
 //   independent of zoom (wiki/decisions/d009-scrub-style.md)
 // - tap: jump there
-// - long-press + drag: select a loop region (plays seamlessly)
+// - long-press + drag: select (loop, delete, trim, duplicate)
 // - two fingers: pinch to zoom, drag to pan; overview strip shows where you are
 // - ⏪5 / 5⏩: tap to jump 5 s, hold to rewind / fast-forward at 4×
+// - ✂ split at the playhead; clip strip: tap to select a clip, long-press and
+//   drag to reorder; undo/redo; revert to original (wiki/decisions/
+//   d012-chop-model.md)
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -16,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:pocket_audio/pocket_audio.dart';
 
 import '../audio/audio_control.dart';
+import '../edit/edit_list.dart';
 import '../takes/take_store.dart';
 import '../widgets/waveform.dart';
 
@@ -28,6 +32,9 @@ const _shuttleSpeed = 4.0;
 /// any zoom. Zoomed in closer than this, the needle stays under the finger.
 const _maxScrubFramesPerPixel = sampleRate / 100;
 const _minViewSeconds = 0.25;
+
+/// Cuts snap to a zero crossing within ±5 ms of the recording (d012).
+const _snapRadius = 240;
 
 class TakeScreen extends StatefulWidget {
   const TakeScreen({
@@ -51,14 +58,17 @@ class TakeScreen extends StatefulWidget {
 }
 
 class _TakeScreenState extends State<TakeScreen> {
-  Peaks? _peaks;
+  Peaks? _sourcePeaks;
+  Peaks? _peaks; // timeline peaks for the current edit list
   String? _error;
   int? _openedMs;
   Timer? _ticker;
   bool _playing = false;
   int _position = 0;
+  late EditHistory _history;
+  bool _applying = false;
 
-  // Visible window, in frames.
+  // Visible window, in timeline frames.
   double _viewStart = 0;
   late double _viewSpan;
 
@@ -72,19 +82,23 @@ class _TakeScreenState extends State<TakeScreen> {
   double _scrubAnchorFrame = 0;
   double _scrubStartX = 0;
 
-  // Loop selection (frames), and whether the loop is on.
+  // Selection (timeline frames), and whether it loops.
   int? _selStart, _selEnd;
   bool _loopOn = false;
 
-  int get _length => widget.take.frames;
+  EditList get _edits => _history.current;
+  int get _length => _edits.length;
 
   @override
   void initState() {
     super.initState();
-    _viewSpan = math.max(1, _length).toDouble();
+    final edits = widget.store.loadEdits(widget.take.id, widget.take.frames);
+    _history = EditHistory(edits);
+    _viewSpan = math.max(1, edits.length).toDouble();
     try {
       AudioControl.useOutput();
       PocketAudio.openTake(widget.take.wav.path);
+      if (!edits.isWhole(widget.take.frames)) _pushClips(edits);
     } on PocketAudioException catch (e) {
       _error = 'Could not open this take for playback (${e.message}).';
     }
@@ -93,7 +107,10 @@ class _TakeScreenState extends State<TakeScreen> {
         .then(
           (p) {
             if (!mounted) return;
-            setState(() => _peaks = p);
+            setState(() {
+              _sourcePeaks = p;
+              _peaks = timelinePeaks(p, _edits);
+            });
             WidgetsBinding.instance.addPostFrameCallback((_) {
               final sw = widget.sinceStop;
               if (sw != null && _openedMs == null && mounted) {
@@ -137,17 +154,220 @@ class _TakeScreenState extends State<TakeScreen> {
   }
 
   void _setView(double start, double span) {
+    final len = math.max(1, _length).toDouble();
     final minSpan = _minViewSeconds * sampleRate;
-    span = span.clamp(
-      math.min(minSpan, _length.toDouble()),
-      _length.toDouble(),
-    );
+    span = span.clamp(math.min(minSpan, len), len);
     _viewSpan = span;
-    _viewStart = start.clamp(0.0, math.max(0.0, _length - span));
+    _viewStart = start.clamp(0.0, math.max(0.0, len - span));
   }
 
   int _frameAt(double dx, double width) =>
       (_viewStart + dx / width * _viewSpan).round().clamp(0, _length);
+
+  // ---- editing (wiki/decisions/d012-chop-model.md) ----
+
+  static void _pushClips(EditList e) => PocketAudio.setClips([
+    for (final c in e.clips) (start: c.start, end: c.end, gain: c.gain),
+  ]);
+
+  /// Moves timeline frame [t] to the nearest zero crossing of the recording
+  /// within ±5 ms, without leaving its clip.
+  int _snap(int t) {
+    if (t <= 0 || t >= _length) return t;
+    final l = _edits.locate(t);
+    final c = _edits.clips[l.index];
+    final s = c.start + l.offset;
+    final z = PocketAudio.zeroCrossing(
+      s,
+      radius: _snapRadius,
+    ).clamp(c.start, c.end);
+    return t + (z - s);
+  }
+
+  Future<void> _apply(
+    String label,
+    EditList next, {
+    required int position,
+    ({int start, int end})? select,
+    bool zoomOut = false,
+  }) async {
+    // Decide before the history changes: _length follows the history.
+    final showWhole = zoomOut || _showingWhole;
+    if (_applying || !_history.push(label, next)) return;
+    await _commit(
+      next,
+      position: position,
+      select: select,
+      showWhole: showWhole,
+    );
+  }
+
+  /// Whether the whole take is in view (then edits keep it that way).
+  bool get _showingWhole => _viewSpan >= _length;
+
+  /// Swaps the edit list into the engine. While playing it fades out first and
+  /// back in after, so applying an edit never clicks.
+  Future<void> _commit(
+    EditList list, {
+    required int position,
+    required bool showWhole,
+    ({int start, int end})? select,
+  }) async {
+    _applying = true;
+    final wasPlaying = PocketAudio.isPlaying;
+    if (wasPlaying) {
+      PocketAudio.playing = false;
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+    }
+    _pushClips(list);
+    PocketAudio.seek(position.clamp(0, list.length));
+    widget.store.saveEdits(widget.take, list);
+    setState(() {
+      final src = _sourcePeaks;
+      if (src != null) _peaks = timelinePeaks(src, list);
+      _selStart = select?.start;
+      _selEnd = select?.end;
+      if (select == null) _loopOn = false;
+      _setView(
+        showWhole ? 0 : _viewStart,
+        showWhole ? list.length.toDouble() : _viewSpan,
+      );
+      _position = position.clamp(0, list.length);
+    });
+    if (_loopOn && select != null) {
+      PocketAudio.setLoop(select.start, select.end);
+    } else {
+      PocketAudio.clearLoop();
+    }
+    if (wasPlaying) PocketAudio.playing = true;
+    _applying = false;
+  }
+
+  void _split() {
+    final t = _snap(_position);
+    _apply('Split', _edits.split(t), position: _position);
+  }
+
+  ({int a, int b})? get _snappedSelection {
+    final s = _selStart, e = _selEnd;
+    if (s == null || e == null || e <= s) return null;
+    return (a: _snap(s), b: _snap(e));
+  }
+
+  void _deleteSelection() {
+    final sel = _snappedSelection;
+    if (sel == null) return;
+    if (sel.a <= 0 && sel.b >= _length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "That's the whole take — use Delete take in the menu instead.",
+          ),
+        ),
+      );
+      return;
+    }
+    final p = _position;
+    final pos = p < sel.a
+        ? p
+        : p >= sel.b
+        ? p - (sel.b - sel.a)
+        : sel.a;
+    _apply('Delete', _edits.delete(sel.a, sel.b), position: pos);
+  }
+
+  void _trimToSelection() {
+    final sel = _snappedSelection;
+    if (sel == null) return;
+    final p = _position;
+    final pos = p >= sel.a && p < sel.b ? p - sel.a : 0;
+    _apply('Trim', _edits.trim(sel.a, sel.b), position: pos);
+  }
+
+  void _duplicateSelection() {
+    final sel = _snappedSelection;
+    if (sel == null) return;
+    final len = sel.b - sel.a;
+    // Select the copy, so pressing Duplicate again keeps repeating it.
+    _apply(
+      'Duplicate',
+      _edits.duplicate(sel.a, sel.b),
+      position: _position < sel.b ? _position : _position + len,
+      select: (start: sel.b, end: sel.b + len),
+      zoomOut: true, // always show the whole take after duplicating
+    );
+  }
+
+  void _moveClip(int from, int to) {
+    final before = _edits;
+    final after = before.move(from, to);
+    // Keep the playhead on the same audio.
+    final l = before.locate(_position);
+    var pos = _position;
+    if (l.index < before.clips.length) {
+      final order = [for (var i = 0; i < before.clips.length; i++) i];
+      order.insert(to.clamp(0, order.length - 1), order.removeAt(from));
+      pos = after.startOf(order.indexOf(l.index)) + l.offset;
+    }
+    _apply('Move clip', after, position: pos);
+  }
+
+  /// Tap on a clip block: selects it, or — if something outside it is already
+  /// selected — extends the selection to cover both (a contiguous block).
+  /// Tapping a clip inside the selection selects just that clip again.
+  void _selectClip(int index) {
+    final cs = _edits.startOf(index);
+    final ce = cs + _edits.clips[index].length;
+    var start = cs, end = ce;
+    final s = _selStart, e = _selEnd;
+    if (s != null && e != null && !(cs >= s && ce <= e)) {
+      start = math.min(s, cs);
+      end = math.max(e, ce);
+    }
+    setState(() {
+      _selStart = start;
+      _selEnd = end;
+    });
+    if (_loopOn) PocketAudio.setLoop(start, end);
+  }
+
+  Future<void> _undo() async {
+    if (_applying || !_history.canUndo) return;
+    final showWhole = _showingWhole;
+    final list = _history.undo();
+    await _commit(
+      list,
+      position: math.min(_position, list.length),
+      showWhole: showWhole,
+    );
+  }
+
+  Future<void> _redo() async {
+    if (_applying || !_history.canRedo) return;
+    final showWhole = _showingWhole;
+    final list = _history.redo();
+    await _commit(
+      list,
+      position: math.min(_position, list.length),
+      showWhole: showWhole,
+    );
+  }
+
+  void _goToSelectionStart() {
+    final s = _selStart;
+    if (s == null) return;
+    PocketAudio.seek(s);
+    _tick();
+  }
+
+  void _revert() {
+    final s = _edits.sourceAt(_position) ?? 0;
+    _apply(
+      'Revert to original',
+      EditList.whole(widget.take.frames),
+      position: s,
+    );
+  }
 
   // ---- transport ----
 
@@ -282,14 +502,15 @@ class _TakeScreenState extends State<TakeScreen> {
     });
   }
 
-  Future<void> _delete() async {
+  Future<void> _deleteTake() async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete this take?'),
         content: Text(
-          '${formatDuration(widget.take.duration)} of audio will '
-          'be deleted from this phone. This cannot be undone.',
+          'The recording (${formatDuration(Duration(microseconds: widget.take.frames * 1000000 ~/ sampleRate))}) '
+          'and its edits will be deleted from this phone. This cannot be '
+          'undone.',
         ),
         actions: [
           TextButton(
@@ -317,23 +538,45 @@ class _TakeScreenState extends State<TakeScreen> {
     final scheme = theme.colorScheme;
     final peaks = _peaks;
     final selColor = scheme.tertiary.withValues(alpha: _loopOn ? 0.35 : 0.18);
+    final hasSelection = _selStart != null && _selAnchor == null;
 
     double toView(num frame) => (frame - _viewStart) / _viewSpan;
+    final joins = <int>[
+      for (var i = 1; i < _edits.clips.length; i++) _edits.startOf(i),
+    ];
 
     return Scaffold(
       appBar: AppBar(
         title: Text(takeTitle(widget.take)),
         actions: [
           IconButton(
-            tooltip: 'Delete take',
-            onPressed: _delete,
-            icon: const Icon(Icons.delete_outline),
+            key: const Key('undo'),
+            tooltip: _history.canUndo ? 'Undo ${_history.undoLabel}' : 'Undo',
+            onPressed: _history.canUndo ? _undo : null,
+            icon: const Icon(Icons.undo),
+          ),
+          IconButton(
+            key: const Key('redo'),
+            tooltip: _history.canRedo ? 'Redo ${_history.redoLabel}' : 'Redo',
+            onPressed: _history.canRedo ? _redo : null,
+            icon: const Icon(Icons.redo),
+          ),
+          PopupMenuButton<String>(
+            onSelected: (v) => v == 'revert' ? _revert() : _deleteTake(),
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'revert',
+                enabled: !_edits.isWhole(widget.take.frames),
+                child: const Text('Revert to original'),
+              ),
+              const PopupMenuItem(value: 'delete', child: Text('Delete take')),
+            ],
           ),
         ],
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -346,62 +589,7 @@ class _TakeScreenState extends State<TakeScreen> {
                   ),
                 ),
               if (peaks != null) ...[
-                // Overview: the whole take, with the visible window shaded.
-                SizedBox(
-                  height: 36,
-                  child: LayoutBuilder(
-                    builder: (context, box) {
-                      void centre(double dx) => setState(() {
-                        final f = dx / box.maxWidth * _length;
-                        _setView(f - _viewSpan / 2, _viewSpan);
-                      });
-                      return GestureDetector(
-                        key: const Key('overview'),
-                        behavior: HitTestBehavior.opaque,
-                        onTapUp: (d) => centre(d.localPosition.dx),
-                        onHorizontalDragUpdate: (d) =>
-                            centre(d.localPosition.dx),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: ColoredBox(
-                            color: scheme.surfaceContainerHighest.withValues(
-                              alpha: 0.5,
-                            ),
-                            child: CustomPaint(
-                              painter: WaveformPainter(
-                                minMax: peaks.minMax,
-                                firstBlock: 0,
-                                blockCount: peaks.blocks,
-                                color: scheme.primary.withValues(alpha: 0.7),
-                                playhead: _length == 0
-                                    ? 0
-                                    : _position / _length,
-                                playheadColor: scheme.onSurface,
-                                bands: [
-                                  if (_viewSpan < _length)
-                                    (
-                                      from: _viewStart / _length,
-                                      to: (_viewStart + _viewSpan) / _length,
-                                      color: scheme.primary.withValues(
-                                        alpha: 0.2,
-                                      ),
-                                    ),
-                                  if (_selStart != null)
-                                    (
-                                      from: _selStart! / _length,
-                                      to: _selEnd! / _length,
-                                      color: selColor,
-                                    ),
-                                ],
-                              ),
-                              child: const SizedBox.expand(),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
+                _overview(peaks, scheme, selColor),
                 const SizedBox(height: 8),
               ],
               Expanded(
@@ -448,6 +636,8 @@ class _TakeScreenState extends State<TakeScreen> {
                                     playheadColor: _scrubbing
                                         ? scheme.tertiary
                                         : scheme.onSurface,
+                                    markers: [for (final j in joins) toView(j)],
+                                    markerColor: scheme.secondary,
                                     bands: [
                                       if (_selStart != null)
                                         (
@@ -465,46 +655,29 @@ class _TakeScreenState extends State<TakeScreen> {
                         ),
                 ),
               ),
-              const SizedBox(height: 8),
-              if (_selStart != null && _selAnchor == null)
-                Row(
-                  children: [
-                    const Icon(Icons.repeat, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Loop ${_fmtPrecise(_selStart!)} – '
-                        '${_fmtPrecise(_selEnd!)}',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontFeatures: const [FontFeature.tabularFigures()],
+              if (_edits.clips.length > 1) ...[
+                const SizedBox(height: 8),
+                _clipStrip(scheme),
+              ],
+              const SizedBox(height: 4),
+              SizedBox(
+                height: 48,
+                child: hasSelection
+                    ? _selectionBar(theme)
+                    : Center(
+                        child: Text(
+                          _scrubbing
+                              ? 'Scrubbing'
+                              : 'Drag to scrub · long-press + drag to select '
+                                    '· pinch to zoom',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodySmall,
                         ),
                       ),
-                    ),
-                    Switch(
-                      key: const Key('loop'),
-                      value: _loopOn,
-                      onChanged: _setLoopOn,
-                    ),
-                    IconButton(
-                      tooltip: 'Clear selection',
-                      onPressed: _clearSelection,
-                      icon: const Icon(Icons.close),
-                    ),
-                  ],
-                )
-              else
-                Text(
-                  _scrubbing
-                      ? 'Scrubbing'
-                      : 'Drag to scrub · long-press + drag to loop · '
-                            'pinch to zoom',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodySmall,
-                ),
-              const SizedBox(height: 4),
+              ),
               Text(
                 '${formatDuration(Duration(milliseconds: _position * 1000 ~/ sampleRate))}'
-                ' / ${formatDuration(widget.take.duration)}',
+                ' / ${formatDuration(Duration(milliseconds: _length * 1000 ~/ sampleRate))}',
                 key: const Key('position'),
                 textAlign: TextAlign.center,
                 style: theme.textTheme.titleLarge?.copyWith(
@@ -521,6 +694,13 @@ class _TakeScreenState extends State<TakeScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  IconButton.outlined(
+                    key: const Key('split'),
+                    tooltip: 'Split at playhead',
+                    onPressed: _error == null && _position > 0 ? _split : null,
+                    icon: const Icon(Icons.content_cut),
+                  ),
+                  const SizedBox(width: 16),
                   _HoldButton(
                     key: const Key('back5'),
                     icon: Icons.replay_5,
@@ -530,9 +710,9 @@ class _TakeScreenState extends State<TakeScreen> {
                     onHoldStart: () => _shuttle(-_shuttleSpeed),
                     onHoldEnd: _endShuttle,
                   ),
-                  const SizedBox(width: 24),
+                  const SizedBox(width: 16),
                   SizedBox.square(
-                    dimension: 96,
+                    dimension: 88,
                     child: FilledButton(
                       key: const Key('play'),
                       style: FilledButton.styleFrom(
@@ -541,11 +721,11 @@ class _TakeScreenState extends State<TakeScreen> {
                       onPressed: _error == null ? _toggle : null,
                       child: Icon(
                         _playing ? Icons.pause : Icons.play_arrow,
-                        size: 56,
+                        size: 52,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 24),
+                  const SizedBox(width: 16),
                   _HoldButton(
                     key: const Key('fwd5'),
                     icon: Icons.forward_5,
@@ -555,12 +735,180 @@ class _TakeScreenState extends State<TakeScreen> {
                     onHoldStart: () => _shuttle(_shuttleSpeed),
                     onHoldEnd: _endShuttle,
                   ),
+                  const SizedBox(width: 64),
                 ],
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _overview(Peaks peaks, ColorScheme scheme, Color selColor) {
+    final len = math.max(1, _length);
+    return SizedBox(
+      height: 36,
+      child: LayoutBuilder(
+        builder: (context, box) {
+          void centre(double dx) => setState(() {
+            final f = dx / box.maxWidth * len;
+            _setView(f - _viewSpan / 2, _viewSpan);
+          });
+          return GestureDetector(
+            key: const Key('overview'),
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (d) => centre(d.localPosition.dx),
+            onHorizontalDragUpdate: (d) => centre(d.localPosition.dx),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: ColoredBox(
+                color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                child: CustomPaint(
+                  painter: WaveformPainter(
+                    minMax: peaks.minMax,
+                    firstBlock: 0,
+                    blockCount: peaks.blocks,
+                    color: scheme.primary.withValues(alpha: 0.7),
+                    playhead: _position / len,
+                    playheadColor: scheme.onSurface,
+                    bands: [
+                      if (_viewSpan < _length)
+                        (
+                          from: _viewStart / len,
+                          to: (_viewStart + _viewSpan) / len,
+                          color: scheme.primary.withValues(alpha: 0.2),
+                        ),
+                      if (_selStart != null)
+                        (
+                          from: _selStart! / len,
+                          to: _selEnd! / len,
+                          color: selColor,
+                        ),
+                    ],
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// One block per clip, proportional to its length; tap selects the clip,
+  /// long-press and drag reorders.
+  Widget _clipStrip(ColorScheme scheme) {
+    final clips = _edits.clips;
+    final playingIndex = _edits.locate(_position).index;
+    return SizedBox(
+      height: 40,
+      child: LayoutBuilder(
+        builder: (context, box) => ReorderableListView.builder(
+          key: const Key('clips'),
+          scrollDirection: Axis.horizontal,
+          itemCount: clips.length,
+          onReorderItem: _moveClip,
+          proxyDecorator: (child, _, _) =>
+              Material(elevation: 6, color: Colors.transparent, child: child),
+          itemBuilder: (context, i) {
+            final w = math.max(
+              36.0,
+              box.maxWidth * clips[i].length / math.max(1, _length) - 4,
+            );
+            final selected =
+                _selStart == _edits.startOf(i) &&
+                _selEnd == _edits.startOf(i) + clips[i].length;
+            return Padding(
+              key: ValueKey('clip-$i'),
+              padding: const EdgeInsets.only(right: 4),
+              child: GestureDetector(
+                onTap: () => _selectClip(i),
+                child: Container(
+                  width: w,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? scheme.tertiaryContainer
+                        : i == playingIndex
+                        ? scheme.primaryContainer
+                        : scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: scheme.outlineVariant),
+                  ),
+                  child: Text(
+                    '${i + 1}',
+                    style: TextStyle(color: scheme.onSurfaceVariant),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _selectionBar(ThemeData theme) {
+    // Seven controls must fit a phone's width: compact buttons.
+    return IconButtonTheme(
+      data: IconButtonThemeData(
+        style: IconButton.styleFrom(visualDensity: VisualDensity.compact),
+      ),
+      child: _selectionRow(theme),
+    );
+  }
+
+  Widget _selectionRow(ThemeData theme) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            '${_fmtPrecise(_selStart!)} – ${_fmtPrecise(_selEnd!)}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
+        IconButton(
+          key: const Key('to-sel-start'),
+          tooltip: 'Playhead to start of selection',
+          onPressed: _goToSelectionStart,
+          icon: const Icon(Icons.first_page),
+        ),
+        IconButton(
+          key: const Key('loop'),
+          tooltip: _loopOn ? 'Stop looping' : 'Loop selection',
+          isSelected: _loopOn,
+          onPressed: () => _setLoopOn(!_loopOn),
+          icon: const Icon(Icons.repeat),
+          selectedIcon: const Icon(Icons.repeat_on),
+        ),
+        IconButton(
+          key: const Key('delete-sel'),
+          tooltip: 'Delete selection',
+          onPressed: _deleteSelection,
+          icon: const Icon(Icons.delete_outline),
+        ),
+        IconButton(
+          key: const Key('trim'),
+          tooltip: 'Trim to selection',
+          onPressed: _trimToSelection,
+          icon: const Icon(Icons.crop),
+        ),
+        IconButton(
+          key: const Key('duplicate'),
+          tooltip: 'Duplicate selection',
+          onPressed: _duplicateSelection,
+          icon: const Icon(Icons.copy_all),
+        ),
+        IconButton(
+          tooltip: 'Clear selection',
+          onPressed: _clearSelection,
+          icon: const Icon(Icons.close),
+        ),
+      ],
     );
   }
 

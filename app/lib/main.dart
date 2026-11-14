@@ -132,6 +132,7 @@ class _TakesScreenState extends State<TakesScreen> {
                 return ListTile(
                   leading: const Icon(Icons.graphic_eq),
                   title: Text(takeTitle(take)),
+                  subtitle: take.edited ? const Text("Edited") : null,
                   trailing: Text(
                     formatDuration(take.duration),
                     style: theme.textTheme.bodyLarge?.copyWith(

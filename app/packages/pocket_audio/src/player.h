@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace ps {
 
@@ -37,8 +38,24 @@ bool probeWav(std::FILE* f, uint32_t* sampleRate, long* dataOffset,
 bool buildPeaksFromWav(const char* wavPath, const char* peaksPath,
                        uint32_t blockFrames);
 
+// One clip of the edit list, placed on the timeline (wiki/decisions/
+// d012-chop-model.md).
+struct TimelineClip {
+  int64_t srcStart, srcEnd;  // frames of the recording, end exclusive
+  int64_t tStart;            // where it starts on the timeline
+  float gain;
+  int64_t half;  // half-width of the crossfade at the join with the previous
+                 // clip (0 for the first clip)
+};
+
+struct Timeline {
+  std::vector<TimelineClip> clips;
+  int64_t length = 0;
+};
+
 class Player {
  public:
+  static constexpr uint32_t kJoinHalfFrames = 240;  // 10 ms crossfade per join
   static constexpr uint32_t kFadeFrames = 240;  // 5 ms at 48 kHz
 
   Player();
@@ -58,6 +75,19 @@ class Player {
   int32_t seek(int64_t frame);
   int64_t position() const { return position_.load(); }
   int64_t length() const { return length_.load(); }
+
+  // Replaces the edit list: n clips of [srcStart, srcEnd) with gains; n == 0
+  // plays the whole recording. Positions, loops and scrub are in timeline
+  // frames. Returns the new timeline length. The caller re-seeks.
+  int64_t setClips(const int64_t* srcStarts, const int64_t* srcEnds,
+                   const float* gains, int32_t n);
+
+  // Nearest zero crossing of the recording within ±radius of srcFrame (the
+  // index of the first sample after the sign change), or srcFrame if none.
+  int64_t zeroCrossing(int64_t srcFrame, int32_t radius) const;
+
+  // Timeline frame → recording frame (-1 outside the timeline).
+  int64_t sourceFrameAt(int64_t timelineFrame);
 
   // A–B loop (end exclusive); end <= start clears it.
   void setLoop(int64_t start, int64_t end);
@@ -79,8 +109,12 @@ class Player {
   }
 
  private:
-  float sampleAt(int64_t i) const;   // 0 outside the take
-  float interp(double pos) const;    // 4-point Hermite
+  float srcAt(int64_t i) const;  // recording frame; 0 outside the take
+  // Timeline frame, with equal-power crossfades inside each join.
+  float timelineAt(const Timeline* tl, int64_t t) const;
+  float interp(const Timeline* tl, double pos) const;  // 4-point Hermite
+  Timeline* buildTimeline(const int64_t* s, const int64_t* e, const float* g,
+                          int32_t n) const;
   void prefetchLoop();
   void unmapLocked();
 
@@ -118,6 +152,9 @@ class Player {
   double fromPos_ = 0.0;
   float fromGain_ = 0.0f;
   uint32_t xfadeT_ = 0;
+
+  std::atomic<Timeline*> timeline_{nullptr};
+  std::mutex timelineMutex_;  // swap/delete vs prefetch reads
 
   std::thread prefetch_;
   std::atomic<bool> stopPrefetch_{false};

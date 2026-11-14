@@ -19,12 +19,18 @@ class WaveformPainter extends CustomPainter {
     this.playhead,
     this.playheadColor,
     this.bands = const [],
+    this.markers = const [],
+    this.markerColor,
     this.revision = 0,
   });
 
   /// Shaded spans behind the waveform, as fractions of the window (0..1):
   /// loop selection, or the visible window on an overview strip.
   final List<({double from, double to, Color color})> bands;
+
+  /// Thin vertical lines (fractions of the window), e.g. clip joins.
+  final List<double> markers;
+  final Color? markerColor;
 
   /// Interleaved (min, max) pairs.
   final Float32List minMax;
@@ -91,6 +97,13 @@ class WaveformPainter extends CustomPainter {
       );
     }
 
+    final markerPaint = Paint()..color = markerColor ?? color;
+    for (final m in markers) {
+      if (m < 0 || m > 1) continue;
+      final x = m * size.width;
+      canvas.drawRect(Rect.fromLTWH(x - 0.5, 0, 1, size.height), markerPaint);
+    }
+
     if (playhead != null) {
       final px = playhead!.clamp(0.0, 1.0) * size.width;
       canvas.drawRect(
@@ -108,6 +121,7 @@ class WaveformPainter extends CustomPainter {
       old.blockCount != blockCount ||
       old.playhead != playhead ||
       !listEquals(old.bands, bands) ||
+      !listEquals(old.markers, markers) ||
       old.color != color;
 }
 

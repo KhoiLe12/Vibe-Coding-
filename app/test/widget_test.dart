@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocket_audio/pocket_audio.dart';
+import 'package:pocket_studio/edit/edit_list.dart';
 import 'package:pocket_studio/main.dart';
 import 'package:pocket_studio/takes/take_store.dart';
 
@@ -54,5 +55,43 @@ void main() {
     final peaks = await store.loadPeaks(take);
     expect(peaks.blocks, 16);
     expect(peaks.minMax.every((v) => v == 0.5), isTrue);
+  });
+
+  test('edits are saved per take and shown as the take length', () {
+    final store = TakeStore(dir);
+    final t = store.newTake();
+    PocketAudio.beginRecording(t.wav);
+    PocketAudio.processInput(Float32List(48000));
+    PocketAudio.endRecording(peaksPath: t.peaks);
+    var take = store.list().single;
+    expect(take.edited, isFalse);
+
+    final edits = EditList.whole(take.frames).delete(0, 12000);
+    store.saveEdits(take, edits);
+    take = store.list().single;
+    expect(take.edited, isTrue);
+    expect(take.editedFrames, 36000);
+    expect(store.loadEdits(take.id, take.frames), edits);
+
+    // Reverting to the whole recording removes the edits file.
+    store.saveEdits(take, EditList.whole(take.frames));
+    expect(store.editsFile(take.id).existsSync(), isFalse);
+    expect(store.list().single.edited, isFalse);
+
+    // Deleting a take deletes its edits too.
+    store.saveEdits(take, edits);
+    store.delete(take);
+    expect(store.editsFile(take.id).existsSync(), isFalse);
+  });
+
+  test('a damaged edits file falls back to the whole recording', () {
+    final store = TakeStore(dir);
+    final t = store.newTake();
+    PocketAudio.beginRecording(t.wav);
+    PocketAudio.processInput(Float32List(4800));
+    PocketAudio.endRecording(peaksPath: t.peaks);
+    final take = store.list().single;
+    store.editsFile(take.id).writeAsStringSync('{not json');
+    expect(store.loadEdits(take.id, take.frames).isWhole(take.frames), isTrue);
   });
 }

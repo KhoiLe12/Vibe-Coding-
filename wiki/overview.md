@@ -33,7 +33,7 @@ Each milestone ends with: build workflow → lint pass → log entry.
 | M9+ | Backlog | Driven by raw/feedback/ |
 
 ## Current state
-**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **Milestone 2 done on iOS** (2026-11-14): latency gate passed (22.1 ms, drift 0; [[d010-duplex-buffer-size]]); tape-style scrub ([[d009-scrub-style]]), hold-to-rewind/fast-forward, zoom, A–B loops ([[playback-and-scrub]]) verified on the iPhone. **Next: M3 — chop** ([[chop]], [[edit-model]], [[undo-history]]).
+**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **Milestone 2 done on iOS** (2026-11-14): latency gate passed (22.1 ms, drift 0; [[d010-duplex-buffer-size]]); tape-style scrub ([[d009-scrub-style]]), hold-to-rewind/fast-forward, zoom, A–B loops ([[playback-and-scrub]]) verified on the iPhone. **Milestone 3 done on iOS** (2026-11-14): split / delete / trim / duplicate / reorder with crossfaded, zero-crossing-snapped joins; unlimited undo/redo; edits saved per take ([[chop]], [[d012-chop-model]]). **Next: M4 — transpose & tempo** ([[transpose]], [[tempo]], [[d002-pitch-time-library]]).
 
 - [ ] Android half of the M2 latency gate (no device)
 
