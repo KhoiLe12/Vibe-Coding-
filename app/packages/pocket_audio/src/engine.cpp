@@ -11,6 +11,7 @@
 #include <vector>
 #include <mutex>
 
+#include "dsp_processor.h"
 #include "latency_probe.h"
 #include "platform.h"
 #include "player.h"
@@ -38,6 +39,7 @@ Engine g_engine;
 ps::Recorder g_recorder;
 ps::Player g_player;
 ps::LatencyProbe g_probe;
+ps::DspProcessor g_dsp;
 // Requested period (I/O buffer) size in frames; 0 = miniaudio's default.
 std::atomic<int32_t> g_periodFrames{0};
 // Guards start/stop/restart. Never taken on the audio thread.
@@ -292,7 +294,15 @@ int64_t ps_player_length(void) { return g_player.length(); }
 int64_t ps_player_set_clips(const int64_t* src_starts, const int64_t* src_ends,
                             const float* gains, int32_t count) {
   if (count > 0 && (!src_starts || !src_ends)) return -1;
-  return g_player.setClips(src_starts, src_ends, gains, count);
+  return g_player.setClips(nullptr, src_starts, src_ends, gains, count);
+}
+
+int64_t ps_player_set_source_clips(const char* source_path,
+                                   const int64_t* src_starts,
+                                   const int64_t* src_ends, const float* gains,
+                                   int32_t count) {
+  if (count > 0 && (!src_starts || !src_ends)) return -1;
+  return g_player.setClips(source_path, src_starts, src_ends, gains, count);
 }
 
 int64_t ps_player_zero_crossing(int64_t src_frame, int32_t radius) {
@@ -382,5 +392,27 @@ void ps_latency_simulate(int32_t delay_frames, int32_t seconds,
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   g_probe.stop();
 }
+
+// ---- DSP processor (M4) ----
+
+int32_t ps_render_start(const char* input, int64_t start, int64_t end,
+                        const char* output, double semitones, double tempo,
+                        int32_t formant) {
+  if (!input || !output) return -1;
+  ps::RenderJob job;
+  job.input = input;
+  job.start = start;
+  job.end = end;
+  job.output = output;
+  job.semitones = semitones;
+  job.tempo = tempo;
+  job.formant = formant != 0;
+  return g_dsp.start(job);
+}
+
+void ps_render_cancel(void) { g_dsp.cancel(); }
+int32_t ps_render_job(void) { return g_dsp.jobId(); }
+int32_t ps_render_state(void) { return g_dsp.state(); }
+double ps_render_progress(void) { return g_dsp.progress(); }
 
 }  // extern "C"

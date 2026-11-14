@@ -11,6 +11,13 @@
 // - ✂ split at the playhead; clip strip: tap to select a clip, long-press and
 //   drag to reorder; undo/redo; revert to original (wiki/decisions/
 //   d012-chop-model.md)
+// - pitch & tempo for the whole take, rendered in the background
+//   (wiki/decisions/d013-transpose-tempo-design.md)
+//
+// Two time domains: the engine (and so positions, selection, loop and view
+// here) runs in *display* frames — the render's timing when a stretched
+// render is playing. The edit list works in *edit* frames — the recording's
+// timing. _toEdit / _toDisplay convert with the tempo of what is playing.
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -20,6 +27,7 @@ import 'package:pocket_audio/pocket_audio.dart';
 
 import '../audio/audio_control.dart';
 import '../edit/edit_list.dart';
+import '../edit/render_cache.dart';
 import '../takes/take_store.dart';
 import '../widgets/waveform.dart';
 
@@ -87,7 +95,27 @@ class _TakeScreenState extends State<TakeScreen> {
   bool _loopOn = false;
 
   EditList get _edits => _history.current;
-  int get _length => _edits.length;
+
+  /// Timeline length as the engine plays it (display frames).
+  int _length = 0;
+
+  // Rendering (M4). _active is what the engine plays from: a render of the
+  // recording at some Tune, or null for the recording itself.
+  Render? _active;
+  Render? _pending;
+  int _pendingJob = -1;
+  double _renderProgress = 0;
+  String? _renderError;
+  Timer? _renderTimer;
+  final _renderClock = Stopwatch();
+
+  /// "Rendered 1:00 of audio in 0.8 s" — the M4 speed criterion, measured
+  /// on the phone.
+  String? _lastRender;
+
+  double get _tempo => _active?.tune.tempo ?? 1.0;
+  int _toEdit(num t) => (t * _tempo).round();
+  int _toDisplay(num e) => (e / _tempo).round();
 
   @override
   void initState() {
@@ -98,7 +126,12 @@ class _TakeScreenState extends State<TakeScreen> {
     try {
       AudioControl.useOutput();
       PocketAudio.openTake(widget.take.wav.path);
-      if (!edits.isWhole(widget.take.frames)) _pushClips(edits);
+      _pushClips(edits);
+      _viewSpan = math.max(1, _length).toDouble();
+      // After the first frame: _ensureRender may call setState.
+      if (!edits.tune.isIdentity) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _ensureRender());
+      }
     } on PocketAudioException catch (e) {
       _error = 'Could not open this take for playback (${e.message}).';
     }
@@ -130,6 +163,8 @@ class _TakeScreenState extends State<TakeScreen> {
   @override
   void dispose() {
     _ticker?.cancel();
+    _renderTimer?.cancel();
+    if (_pending != null) PocketAudio.cancelRender();
     if (PocketAudio.isScrubbing) PocketAudio.endScrub();
     PocketAudio.closeTake();
     AudioControl.release();
@@ -137,6 +172,7 @@ class _TakeScreenState extends State<TakeScreen> {
   }
 
   void _tick() {
+    _pollRender();
     final playing = PocketAudio.isPlaying;
     final position = PocketAudio.playbackPosition;
     if (playing == _playing && position == _position) return;
@@ -166,14 +202,175 @@ class _TakeScreenState extends State<TakeScreen> {
 
   // ---- editing (wiki/decisions/d012-chop-model.md) ----
 
-  static void _pushClips(EditList e) => PocketAudio.setClips([
-    for (final c in e.clips) (start: c.start, end: c.end, gain: c.gain),
-  ]);
+  /// Hands the edit list to the engine: from the active render if it covers
+  /// the clips, else from the recording (and the render is dropped).
+  void _pushClips(EditList e) {
+    final need = RenderCache.neededRange(e, widget.take.frames);
+    final a = _active;
+    if (a != null && a.covers(need.start, need.end)) {
+      try {
+        _length = PocketAudio.setClips(a.clipsFor(e), source: a.path);
+        return;
+      } on PocketAudioException {
+        // Render file vanished (cache trimmed): fall back to the recording.
+      }
+    }
+    _active = null;
+    _length = PocketAudio.setClips([
+      for (final c in e.clips) (start: c.start, end: c.end, gain: c.gain),
+    ]);
+  }
+
+  // ---- rendering (wiki/decisions/d013-transpose-tempo-design.md) ----
+
+  /// Debounced: rapid taps only render the final value.
+  void _scheduleRender() {
+    _renderTimer?.cancel();
+    _renderTimer = Timer(const Duration(milliseconds: 300), _ensureRender);
+  }
+
+  /// Makes sure the engine will play the edit list at its Tune: switches to
+  /// a cached render or the recording right away, or starts a render.
+  void _ensureRender() {
+    if (!mounted) return;
+    final e = _edits;
+    final tune = e.tune;
+    if (tune.isIdentity) {
+      if (_pending != null) PocketAudio.cancelRender();
+      _pending = null;
+      if (_active != null) _switchTo(null);
+      setState(() => _renderError = null);
+      return;
+    }
+    final need = RenderCache.neededRange(e, widget.take.frames);
+    final a = _active;
+    if (a != null && a.tune == tune && a.covers(need.start, need.end)) return;
+    final renders = widget.store.renders;
+    final cached = renders.find(widget.take.id, tune, need.start, need.end);
+    if (cached != null) {
+      if (_pending != null) PocketAudio.cancelRender();
+      _pending = null;
+      _switchTo(cached);
+      return;
+    }
+    final plan = renders.planFor(widget.take.id, tune, need.start, need.end);
+    if (_pending?.path == plan.path) return; // already on it
+    renders.trim(keep: {if (a != null) a.path});
+    _pendingJob = PocketAudio.startRender(
+      input: widget.take.wav.path,
+      start: plan.start,
+      end: plan.end,
+      output: plan.path,
+      semitones: tune.semitones,
+      tempo: tune.tempo,
+      formant: tune.formant,
+    );
+    _renderClock
+      ..reset()
+      ..start();
+    setState(() {
+      _pending = plan;
+      _renderProgress = 0;
+      _renderError = null;
+      _lastRender = null;
+    });
+  }
+
+  void _pollRender() {
+    final p = _pending;
+    if (p == null || PocketAudio.renderJob != _pendingJob) return;
+    switch (PocketAudio.renderState) {
+      case RenderState.running:
+        final prog = PocketAudio.renderProgress;
+        if ((prog - _renderProgress).abs() > 0.01) {
+          setState(() => _renderProgress = prog);
+        }
+      case RenderState.done:
+        _pending = null;
+        final secs = (p.end - p.start) / sampleRate;
+        _lastRender =
+            'Rendered ${formatDuration(Duration(milliseconds: (secs * 1000).round()))} '
+            'in ${(_renderClock.elapsedMilliseconds / 1000).toStringAsFixed(1)} s';
+        if (p.tune == _edits.tune) {
+          _switchTo(p);
+        } else {
+          _ensureRender(); // settings moved on meanwhile
+        }
+        setState(() {});
+      case RenderState.failed:
+        setState(() {
+          _pending = null;
+          _renderError = 'Could not render the new pitch/tempo.';
+        });
+      case RenderState.cancelled:
+      case RenderState.idle:
+        setState(() => _pending = null);
+    }
+  }
+
+  /// Switches what the engine plays from (a render, or null = recording)
+  /// at the same musical position, fading around the swap.
+  Future<void> _switchTo(Render? r) async {
+    if (_applying) {
+      // An edit is being applied; try again right after it.
+      Future<void>.delayed(const Duration(milliseconds: 30), _ensureRender);
+      return;
+    }
+    _applying = true;
+    final wasPlaying = PocketAudio.isPlaying;
+    if (wasPlaying) {
+      PocketAudio.playing = false;
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+    }
+    // Remember everything in edit frames, swap, convert back.
+    final pos = _toEdit(_position);
+    final sel = _selStart == null
+        ? null
+        : (start: _toEdit(_selStart!), end: _toEdit(_selEnd!));
+    final whole = _showingWhole;
+    final vStart = _toEdit(_viewStart), vSpan = _toEdit(_viewSpan);
+    _active = r;
+    _pushClips(_edits);
+    PocketAudio.seek(_toDisplay(pos).clamp(0, _length));
+    if (!mounted) return;
+    setState(() {
+      _position = _toDisplay(pos).clamp(0, _length);
+      if (sel != null) {
+        _selStart = _toDisplay(sel.start);
+        _selEnd = _toDisplay(sel.end);
+      }
+      if (whole) {
+        _setView(0, _length.toDouble());
+      } else {
+        _setView(vStart / _tempo, vSpan / _tempo);
+      }
+    });
+    if (_loopOn && _selStart != null) {
+      PocketAudio.setLoop(_selStart!, _selEnd!);
+    }
+    if (wasPlaying) PocketAudio.playing = true;
+    _applying = false;
+  }
+
+  /// Changes the take's pitch/tempo (undoable; taps in a row coalesce).
+  void _setTune(Tune next, String label) {
+    _apply(
+      label,
+      _edits.withTune(next),
+      position: _toEdit(_position),
+      select: _selStart == null
+          ? null
+          : (start: _toEdit(_selStart!), end: _toEdit(_selEnd!)),
+      coalesce: true,
+    );
+  }
 
   /// Moves timeline frame [t] to the nearest zero crossing of the recording
   /// within ±5 ms, without leaving its clip.
+  /// Moves edit frame [t] to the nearest zero crossing of the recording
+  /// within ±5 ms, without leaving its clip.
   int _snap(int t) {
-    if (t <= 0 || t >= _length) return t;
+    if (t <= 0 || t >= _edits.length) return t;
     final l = _edits.locate(t);
     final c = _edits.clips[l.index];
     final s = c.start + l.offset;
@@ -184,16 +381,19 @@ class _TakeScreenState extends State<TakeScreen> {
     return t + (z - s);
   }
 
+  /// Records an edit and applies it. [position] and [select] are in *edit*
+  /// frames (the recording's timing).
   Future<void> _apply(
     String label,
     EditList next, {
     required int position,
     ({int start, int end})? select,
     bool zoomOut = false,
+    bool coalesce = false,
   }) async {
-    // Decide before the history changes: _length follows the history.
+    // Decide before the history changes.
     final showWhole = zoomOut || _showingWhole;
-    if (_applying || !_history.push(label, next)) return;
+    if (_applying || !_history.push(label, next, coalesce: coalesce)) return;
     await _commit(
       next,
       position: position,
@@ -206,7 +406,8 @@ class _TakeScreenState extends State<TakeScreen> {
   bool get _showingWhole => _viewSpan >= _length;
 
   /// Swaps the edit list into the engine. While playing it fades out first and
-  /// back in after, so applying an edit never clicks.
+  /// back in after, so applying an edit never clicks. [position] and [select]
+  /// are edit frames; they are converted once the engine's timing is known.
   Future<void> _commit(
     EditList list, {
     required int position,
@@ -219,45 +420,52 @@ class _TakeScreenState extends State<TakeScreen> {
       PocketAudio.playing = false;
       await Future<void>.delayed(const Duration(milliseconds: 15));
     }
+    final oldTempo = _tempo;
+    final vStart = _viewStart * oldTempo, vSpan = _viewSpan * oldTempo;
     _pushClips(list);
-    PocketAudio.seek(position.clamp(0, list.length));
+    final pos = _toDisplay(position.clamp(0, list.length)).clamp(0, _length);
+    PocketAudio.seek(pos);
     widget.store.saveEdits(widget.take, list);
+    if (!mounted) return;
     setState(() {
       final src = _sourcePeaks;
       if (src != null) _peaks = timelinePeaks(src, list);
-      _selStart = select?.start;
-      _selEnd = select?.end;
+      _selStart = select == null ? null : _toDisplay(select.start);
+      _selEnd = select == null ? null : _toDisplay(select.end);
       if (select == null) _loopOn = false;
-      _setView(
-        showWhole ? 0 : _viewStart,
-        showWhole ? list.length.toDouble() : _viewSpan,
-      );
-      _position = position.clamp(0, list.length);
+      if (showWhole) {
+        _setView(0, _length.toDouble());
+      } else {
+        _setView(vStart / _tempo, vSpan / _tempo);
+      }
+      _position = pos;
     });
-    if (_loopOn && select != null) {
-      PocketAudio.setLoop(select.start, select.end);
+    if (_loopOn && _selStart != null) {
+      PocketAudio.setLoop(_selStart!, _selEnd!);
     } else {
       PocketAudio.clearLoop();
     }
     if (wasPlaying) PocketAudio.playing = true;
     _applying = false;
+    _scheduleRender(); // pitch/tempo changed, or the edit needs more render
   }
 
   void _split() {
-    final t = _snap(_position);
-    _apply('Split', _edits.split(t), position: _position);
+    final p = _toEdit(_position);
+    _apply('Split', _edits.split(_snap(p)), position: p);
   }
 
+  /// The selection in edit frames, snapped to zero crossings.
   ({int a, int b})? get _snappedSelection {
     final s = _selStart, e = _selEnd;
     if (s == null || e == null || e <= s) return null;
-    return (a: _snap(s), b: _snap(e));
+    return (a: _snap(_toEdit(s)), b: _snap(_toEdit(e)));
   }
 
   void _deleteSelection() {
     final sel = _snappedSelection;
     if (sel == null) return;
-    if (sel.a <= 0 && sel.b >= _length) {
+    if (sel.a <= 0 && sel.b >= _edits.length) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -267,7 +475,7 @@ class _TakeScreenState extends State<TakeScreen> {
       );
       return;
     }
-    final p = _position;
+    final p = _toEdit(_position);
     final pos = p < sel.a
         ? p
         : p >= sel.b
@@ -279,7 +487,7 @@ class _TakeScreenState extends State<TakeScreen> {
   void _trimToSelection() {
     final sel = _snappedSelection;
     if (sel == null) return;
-    final p = _position;
+    final p = _toEdit(_position);
     final pos = p >= sel.a && p < sel.b ? p - sel.a : 0;
     _apply('Trim', _edits.trim(sel.a, sel.b), position: pos);
   }
@@ -288,11 +496,12 @@ class _TakeScreenState extends State<TakeScreen> {
     final sel = _snappedSelection;
     if (sel == null) return;
     final len = sel.b - sel.a;
+    final p = _toEdit(_position);
     // Select the copy, so pressing Duplicate again keeps repeating it.
     _apply(
       'Duplicate',
       _edits.duplicate(sel.a, sel.b),
-      position: _position < sel.b ? _position : _position + len,
+      position: p < sel.b ? p : p + len,
       select: (start: sel.b, end: sel.b + len),
       zoomOut: true, // always show the whole take after duplicating
     );
@@ -302,8 +511,9 @@ class _TakeScreenState extends State<TakeScreen> {
     final before = _edits;
     final after = before.move(from, to);
     // Keep the playhead on the same audio.
-    final l = before.locate(_position);
-    var pos = _position;
+    final p = _toEdit(_position);
+    final l = before.locate(p);
+    var pos = p;
     if (l.index < before.clips.length) {
       final order = [for (var i = 0; i < before.clips.length; i++) i];
       order.insert(to.clamp(0, order.length - 1), order.removeAt(from));
@@ -316,8 +526,8 @@ class _TakeScreenState extends State<TakeScreen> {
   /// selected — extends the selection to cover both (a contiguous block).
   /// Tapping a clip inside the selection selects just that clip again.
   void _selectClip(int index) {
-    final cs = _edits.startOf(index);
-    final ce = cs + _edits.clips[index].length;
+    final cs = _toDisplay(_edits.startOf(index));
+    final ce = _toDisplay(_edits.startOf(index) + _edits.clips[index].length);
     var start = cs, end = ce;
     final s = _selStart, e = _selEnd;
     if (s != null && e != null && !(cs >= s && ce <= e)) {
@@ -334,10 +544,11 @@ class _TakeScreenState extends State<TakeScreen> {
   Future<void> _undo() async {
     if (_applying || !_history.canUndo) return;
     final showWhole = _showingWhole;
+    final p = _toEdit(_position);
     final list = _history.undo();
     await _commit(
       list,
-      position: math.min(_position, list.length),
+      position: math.min(p, list.length),
       showWhole: showWhole,
     );
   }
@@ -345,10 +556,11 @@ class _TakeScreenState extends State<TakeScreen> {
   Future<void> _redo() async {
     if (_applying || !_history.canRedo) return;
     final showWhole = _showingWhole;
+    final p = _toEdit(_position);
     final list = _history.redo();
     await _commit(
       list,
-      position: math.min(_position, list.length),
+      position: math.min(p, list.length),
       showWhole: showWhole,
     );
   }
@@ -361,7 +573,7 @@ class _TakeScreenState extends State<TakeScreen> {
   }
 
   void _revert() {
-    final s = _edits.sourceAt(_position) ?? 0;
+    final s = _edits.sourceAt(_toEdit(_position)) ?? 0;
     _apply(
       'Revert to original',
       EditList.whole(widget.take.frames),
@@ -542,7 +754,8 @@ class _TakeScreenState extends State<TakeScreen> {
 
     double toView(num frame) => (frame - _viewStart) / _viewSpan;
     final joins = <int>[
-      for (var i = 1; i < _edits.clips.length; i++) _edits.startOf(i),
+      for (var i = 1; i < _edits.clips.length; i++)
+        _toDisplay(_edits.startOf(i)),
     ];
 
     return Scaffold(
@@ -592,6 +805,17 @@ class _TakeScreenState extends State<TakeScreen> {
                 _overview(peaks, scheme, selColor),
                 const SizedBox(height: 8),
               ],
+              _tuneRow(theme),
+              SizedBox(
+                height: 3,
+                child: _pending != null
+                    ? LinearProgressIndicator(
+                        key: const Key('render-progress'),
+                        value: _renderProgress,
+                      )
+                    : null,
+              ),
+              const SizedBox(height: 4),
               Expanded(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
@@ -627,8 +851,11 @@ class _TakeScreenState extends State<TakeScreen> {
                                 child: CustomPaint(
                                   painter: WaveformPainter(
                                     minMax: peaks.minMax,
-                                    firstBlock: (_viewStart / bf).floor(),
-                                    blockCount: (_viewSpan / bf).ceil(),
+                                    // Peaks are in edit frames.
+                                    firstBlock: (_viewStart * _tempo / bf)
+                                        .floor(),
+                                    blockCount: (_viewSpan * _tempo / bf)
+                                        .ceil(),
                                     color: scheme.primary,
                                     playhead: playhead >= 0 && playhead <= 1
                                         ? playhead
@@ -745,6 +972,211 @@ class _TakeScreenState extends State<TakeScreen> {
     );
   }
 
+  // ---- pitch & tempo (M4) ----
+
+  static String _pitchLabel(Tune t) {
+    final whole = t.semitones.round();
+    final cents = ((t.semitones - whole) * 100).round();
+    if (whole == 0 && cents == 0) return 'Pitch';
+    final st = whole == 0 ? '' : '${whole > 0 ? '+' : ''}$whole st';
+    final c = cents == 0 ? '' : '${cents > 0 ? '+' : ''}$cents¢';
+    return [st, c].where((s) => s.isNotEmpty).join(' ');
+  }
+
+  static String _tempoLabel(Tune t) =>
+      t.tempo == 1 ? 'Tempo' : '${(t.tempo * 100).round()}%';
+
+  Widget _tuneRow(ThemeData theme) {
+    final t = _edits.tune;
+    final status =
+        _renderError ??
+        (_pending != null
+            ? 'Rendering… ${(_renderProgress * 100).round()}%'
+            : _active != null || t.isIdentity
+            ? _lastRender
+            : 'Waiting…');
+    return Row(
+      children: [
+        ActionChip(
+          key: const Key('pitch'),
+          avatar: const Icon(Icons.music_note, size: 18),
+          label: Text(_pitchLabel(t)),
+          onPressed: _openTuneSheet,
+        ),
+        const SizedBox(width: 8),
+        ActionChip(
+          key: const Key('tempo'),
+          avatar: const Icon(Icons.speed, size: 18),
+          label: Text(_tempoLabel(t)),
+          onPressed: _openTuneSheet,
+        ),
+        const SizedBox(width: 12),
+        if (status != null)
+          Expanded(
+            child: Text(
+              status,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: _renderError != null ? theme.colorScheme.error : null,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Pitch & tempo controls. Changes apply live: playback continues on the
+  /// current audio and switches when the render is ready.
+  void _openTuneSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          final t = _edits.tune;
+          final whole = t.semitones.round();
+          final cents = ((t.semitones - whole) * 100).round();
+          void set(Tune next, String label) {
+            _setTune(next, label);
+            setSheet(() {});
+          }
+
+          final theme = Theme.of(context);
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Pitch', style: theme.textTheme.titleMedium),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton.filledTonal(
+                        key: const Key('pitch-down'),
+                        tooltip: 'Down a semitone',
+                        onPressed: whole > Tune.minSemitones
+                            ? () => set(
+                                t.copyWith(
+                                  semitones: (whole - 1) + cents / 100,
+                                ),
+                                'Pitch',
+                              )
+                            : null,
+                        icon: const Icon(Icons.remove),
+                      ),
+                      SizedBox(
+                        width: 120,
+                        child: Text(
+                          '${whole > 0 ? '+' : ''}$whole st',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.headlineSmall?.copyWith(
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ),
+                      IconButton.filledTonal(
+                        key: const Key('pitch-up'),
+                        tooltip: 'Up a semitone',
+                        onPressed: whole < Tune.maxSemitones
+                            ? () => set(
+                                t.copyWith(
+                                  semitones: (whole + 1) + cents / 100,
+                                ),
+                                'Pitch',
+                              )
+                            : null,
+                        icon: const Icon(Icons.add),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 64,
+                        child: Text('${cents > 0 ? '+' : ''}$cents¢'),
+                      ),
+                      Expanded(
+                        child: Slider(
+                          key: const Key('cents'),
+                          value: cents.toDouble(),
+                          min: -50,
+                          max: 50,
+                          divisions: 100,
+                          label: '$cents¢',
+                          onChanged: (v) => set(
+                            t.copyWith(semitones: whole + v.round() / 100),
+                            'Pitch',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SwitchListTile(
+                    key: const Key('formant'),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Keep voice natural'),
+                    subtitle: const Text(
+                      'Preserves formants. For voice; leave off for '
+                      'instruments and noise.',
+                    ),
+                    value: t.formant,
+                    onChanged: (v) => set(t.copyWith(formant: v), 'Formant'),
+                  ),
+                  const SizedBox(height: 8),
+                  Text('Tempo', style: theme.textTheme.titleMedium),
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 64,
+                        child: Text('${(t.tempo * 100).round()}%'),
+                      ),
+                      Expanded(
+                        child: Slider(
+                          key: const Key('tempo-slider'),
+                          value: t.tempo * 100,
+                          min: Tune.minTempo * 100,
+                          max: Tune.maxTempo * 100,
+                          divisions: 75,
+                          label: '${(t.tempo * 100).round()}%',
+                          onChanged: (v) =>
+                              set(t.copyWith(tempo: v.round() / 100), 'Tempo'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _renderError ??
+                              (_pending != null
+                                  ? 'Rendering… playback switches when ready'
+                                  : t.isIdentity
+                                  ? 'Original pitch and tempo'
+                                  : 'Ready'),
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: t == Tune.none
+                            ? null
+                            : () => set(Tune.none, 'Reset pitch & tempo'),
+                        child: const Text('Reset'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _overview(Peaks peaks, ColorScheme scheme, Color selColor) {
     final len = math.max(1, _length);
     return SizedBox(
@@ -815,7 +1247,7 @@ class _TakeScreenState extends State<TakeScreen> {
           itemBuilder: (context, i) {
             final w = math.max(
               36.0,
-              box.maxWidth * clips[i].length / math.max(1, _length) - 4,
+              box.maxWidth * clips[i].length / math.max(1, _edits.length) - 4,
             );
             final selected =
                 _selStart == _edits.startOf(i) &&

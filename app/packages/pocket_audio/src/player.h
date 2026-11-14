@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -38,6 +40,22 @@ bool probeWav(std::FILE* f, uint32_t* sampleRate, long* dataOffset,
 bool buildPeaksFromWav(const char* wavPath, const char* peaksPath,
                        uint32_t blockFrames);
 
+// A mono float WAV mapped read-only. Unmapped when the last owner lets go,
+// so a timeline keeps its source alive for as long as the audio thread may
+// read it.
+struct MappedWav {
+  ~MappedWav();
+  static std::shared_ptr<MappedWav> open(const char* path);
+  float at(int64_t i) const;  // 0 outside the file
+
+  std::string path;
+  const uint8_t* map = nullptr;
+  size_t bytes = 0;
+  const uint8_t* samples = nullptr;  // data starts at byte 58: unaligned
+  int64_t frames = 0;
+  uint32_t sampleRate = 48000;
+};
+
 // One clip of the edit list, placed on the timeline (wiki/decisions/
 // d012-chop-model.md).
 struct TimelineClip {
@@ -49,6 +67,7 @@ struct TimelineClip {
 };
 
 struct Timeline {
+  std::shared_ptr<MappedWav> src;  // the recording, or a render of it (M4)
   std::vector<TimelineClip> clips;
   int64_t length = 0;
 };
@@ -76,18 +95,21 @@ class Player {
   int64_t position() const { return position_.load(); }
   int64_t length() const { return length_.load(); }
 
-  // Replaces the edit list: n clips of [srcStart, srcEnd) with gains; n == 0
-  // plays the whole recording. Positions, loops and scrub are in timeline
-  // frames. Returns the new timeline length. The caller re-seeks.
-  int64_t setClips(const int64_t* srcStarts, const int64_t* srcEnds,
-                   const float* gains, int32_t n);
+  // Replaces the edit list: n clips of [srcStart, srcEnd) of `sourcePath`
+  // (null/empty = the take's recording; else e.g. a transposed render), with
+  // gains; n == 0 plays the whole source. Positions, loops and scrub are in
+  // timeline frames. Returns the new timeline length, or -1 if the source
+  // can't be opened. The caller re-seeks.
+  int64_t setClips(const char* sourcePath, const int64_t* srcStarts,
+                   const int64_t* srcEnds, const float* gains, int32_t n);
 
   // Nearest zero crossing of the recording within ±radius of srcFrame (the
   // index of the first sample after the sign change), or srcFrame if none.
   int64_t zeroCrossing(int64_t srcFrame, int32_t radius) const;
 
-  // Timeline frame → recording frame (-1 outside the timeline).
-  int64_t sourceFrameAt(int64_t timelineFrame);
+  // Timeline frame → (source, frame in it); source null outside the timeline.
+  std::pair<std::shared_ptr<MappedWav>, int64_t> sourceFrameAt(
+      int64_t timelineFrame);
 
   // A–B loop (end exclusive); end <= start clears it.
   void setLoop(int64_t start, int64_t end);
@@ -109,21 +131,18 @@ class Player {
   }
 
  private:
-  float srcAt(int64_t i) const;  // recording frame; 0 outside the take
   // Timeline frame, with equal-power crossfades inside each join.
   float timelineAt(const Timeline* tl, int64_t t) const;
   float interp(const Timeline* tl, double pos) const;  // 4-point Hermite
-  Timeline* buildTimeline(const int64_t* s, const int64_t* e, const float* g,
-                          int32_t n) const;
+  static Timeline* buildTimeline(std::shared_ptr<MappedWav> src,
+                                 const int64_t* s, const int64_t* e,
+                                 const float* g, int32_t n);
   void prefetchLoop();
-  void unmapLocked();
+  void closeLocked();
 
   // Mapping (set while the audio thread is excluded).
-  const uint8_t* map_ = nullptr;
-  size_t mapBytes_ = 0;
-  const uint8_t* samples_ = nullptr;  // may be unaligned: read via memcpy
-  int64_t frames_ = 0;
-  uint32_t sampleRate_ = 48000;
+  // The take's recording (zero-crossing snaps always use it).
+  std::shared_ptr<MappedWav> recording_;
 
   // Shared state.
   std::atomic<bool> active_{false};

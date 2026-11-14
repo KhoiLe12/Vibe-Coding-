@@ -18,6 +18,7 @@ macros:
     - 'PS_OK'
     - 'PS_ERROR_.*'
     - 'PS_MIC_.*'
+    - 'PS_RENDER_.*'
 ffi-native:
 comments:
   style: any

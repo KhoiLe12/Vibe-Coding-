@@ -32,6 +32,13 @@ Stream<LicenseEntry> _thirdPartyLicences() async* {
     'assets/licenses/miniaudio.txt',
   );
   yield LicenseEntryWithLineBreaks(['miniaudio'], miniaudio);
+  for (final (name, file) in [
+    ('Signalsmith Stretch', 'signalsmith-stretch'),
+    ('Signalsmith Linear', 'signalsmith-linear'),
+  ]) {
+    final text = await rootBundle.loadString('assets/licenses/$file.txt');
+    yield LicenseEntryWithLineBreaks([name], text);
+  }
 }
 
 class PocketStudioApp extends StatelessWidget {

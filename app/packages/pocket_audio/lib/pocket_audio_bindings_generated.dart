@@ -218,6 +218,27 @@ external int ps_player_set_clips(
   int count,
 );
 
+/// Like ps_player_set_clips, but the clips index into source_path (a mono
+/// float WAV, e.g. a transposed render of the take, M4) instead of the
+/// recording. NULL/"" = the recording. Swaps atomically like an edit. Returns
+/// the new timeline length, or -1 if the source can't be opened.
+@ffi.Native<
+  ffi.Int64 Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Int64>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Int32,
+  )
+>()
+external int ps_player_set_source_clips(
+  ffi.Pointer<ffi.Char> source_path,
+  ffi.Pointer<ffi.Int64> src_starts,
+  ffi.Pointer<ffi.Int64> src_ends,
+  ffi.Pointer<ffi.Float> gains,
+  int count,
+);
+
 /// Nearest zero crossing in the open take's recording within ±radius frames
 /// of src_frame, or src_frame if there is none (used to snap cuts).
 @ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Int32)>()
@@ -270,6 +291,41 @@ external int ps_peaks_build(
   ffi.Pointer<ffi.Char> wav_path,
   ffi.Pointer<ffi.Char> peaks_path,
 );
+
+/// Returns the new job's id (> 0), or -1 on bad arguments.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Int64,
+    ffi.Int64,
+    ffi.Pointer<ffi.Char>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Int32,
+  )
+>()
+external int ps_render_start(
+  ffi.Pointer<ffi.Char> input,
+  int start,
+  int end,
+  ffi.Pointer<ffi.Char> output,
+  double semitones,
+  double tempo,
+  int formant,
+);
+
+@ffi.Native<ffi.Void Function()>()
+external void ps_render_cancel();
+
+/// Id, state (PS_RENDER_*) and progress (0..1) of the latest job.
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_render_job();
+
+@ffi.Native<ffi.Int32 Function()>()
+external int ps_render_state();
+
+@ffi.Native<ffi.Double Function()>()
+external double ps_render_progress();
 
 /// Starts chirping every interval_ms (at least ~405 ms) and clears results.
 @ffi.Native<ffi.Void Function(ffi.Int32)>()
@@ -340,3 +396,13 @@ const int PS_MIC_UNDETERMINED = 0;
 const int PS_MIC_GRANTED = 1;
 
 const int PS_MIC_DENIED = 2;
+
+const int PS_RENDER_IDLE = 0;
+
+const int PS_RENDER_RUNNING = 1;
+
+const int PS_RENDER_DONE = 2;
+
+const int PS_RENDER_FAILED = 3;
+
+const int PS_RENDER_CANCELLED = 4;

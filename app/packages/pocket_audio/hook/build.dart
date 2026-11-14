@@ -23,6 +23,7 @@ void main(List<String> args) async {
       assetName: '${packageName}_bindings_generated.dart',
       sources: [
         'src/engine.cpp',
+        'src/dsp_processor.cpp',
         'src/latency_probe.cpp',
         'src/player.cpp',
         'src/recorder.cpp',
@@ -30,7 +31,8 @@ void main(List<String> args) async {
         isApple ? 'src/miniaudio_impl.mm' : 'src/miniaudio_impl.cpp',
         isApple ? 'src/platform_apple.mm' : 'src/platform_other.cpp',
       ],
-      includes: ['src'],
+      // Signalsmith Stretch includes "signalsmith-linear/stft.h".
+      includes: ['src', 'src/third_party/signalsmith/linear/include'],
       std: 'c++17',
       // Objective-C mode lets clang pick the language per file extension
       // (.cpp / .mm); it does not link libc++ on its own.
@@ -45,11 +47,13 @@ void main(List<String> args) async {
           'CoreFoundation',
           'CoreAudio',
           'AudioToolbox',
+          'Accelerate', // FFTs for Signalsmith Stretch
         ],
         if (targetOS == OS.iOS) 'AVFoundation',
       ],
       defines: {
         if (isApple) 'MA_NO_RUNTIME_LINKING': null,
+        if (isApple) 'SIGNALSMITH_USE_ACCELERATE': null,
         // Pocket Studio does its own decoding and processing.
         'MA_NO_GENERATION': null,
         'MA_NO_NODE_GRAPH': null,

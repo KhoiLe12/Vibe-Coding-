@@ -40,6 +40,7 @@
 - [[d005-loop-engine]] — accepted: loop pedal runs fully in the C++ real-time engine
 - [[d006-native-build]] — accepted: `package_ffi` build hook, vendored miniaudio, Apple ObjC++ + no runtime linking
 - [[d007-recording-format]] — accepted: mono, 48 kHz, 32-bit float WAV; pre-roll after M1
+- [[d013-transpose-tempo-design]] — accepted: whole-take transpose/tempo 75–150%, formant off by default, render the recording, undoable settings
 - [[d012-chop-model]] — accepted: edit in place + revert, clip list timeline, 10 ms equal-power joins, zero-crossing snap, snapshot undo
 - [[d011-mapped-player]] — accepted: player reads takes via mmap + prefetch (scrub, loops, instant seek)
 - [[d010-duplex-buffer-size]] — accepted: 64-frame buffers while the mic is open; iOS keeps miniaudio (gate passed, 22 ms)

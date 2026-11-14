@@ -33,9 +33,10 @@ Each milestone ends with: build workflow → lint pass → log entry.
 | M9+ | Backlog | Driven by raw/feedback/ |
 
 ## Current state
-**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **Milestone 2 done on iOS** (2026-11-14): latency gate passed (22.1 ms, drift 0; [[d010-duplex-buffer-size]]); tape-style scrub ([[d009-scrub-style]]), hold-to-rewind/fast-forward, zoom, A–B loops ([[playback-and-scrub]]) verified on the iPhone. **Milestone 3 done on iOS** (2026-11-14): split / delete / trim / duplicate / reorder with crossfaded, zero-crossing-snapped joins; unlimited undo/redo; edits saved per take ([[chop]], [[d012-chop-model]]). **Next: M4 — transpose & tempo** ([[transpose]], [[tempo]], [[d002-pitch-time-library]]).
+**Milestone 1 done on iOS** (2026-11-13): record, pause/resume, live waveform + meter, background recording, playback with basic seeking — all M1 criteria verified on an iPhone 16 Pro Max ([[record]]). **Milestone 2 done on iOS** (2026-11-14): latency gate passed (22.1 ms, drift 0; [[d010-duplex-buffer-size]]); tape-style scrub ([[d009-scrub-style]]), hold-to-rewind/fast-forward, zoom, A–B loops ([[playback-and-scrub]]) verified on the iPhone. **Milestone 3 done on iOS** (2026-11-14): split / delete / trim / duplicate / reorder with crossfaded, zero-crossing-snapped joins; unlimited undo/redo; edits saved per take ([[chop]], [[d012-chop-model]]). **Milestone 4 done on iOS** (2026-11-14): whole-take transpose (±24 st, cents, formants) and tempo (75–150 %), rendered in the background with Signalsmith Stretch, undoable ([[transpose]], [[tempo]], [[d013-transpose-tempo-design]]). **Next: M5 — loop pedal** ([[loop-pedal]], [[d005-loop-engine]], [[latency-compensation]]).
 
 - [ ] Android half of the M2 latency gate (no device)
+- [ ] M4 render speed on a **mid-range** phone (≤ 2 s per minute); only the high-end iPhone 16 Pro Max measured (0.6–1 s)
 
 **Android: built by CI, not verified on a device.** No Android phone is available (2026-11-13). Android stays a target ([[d001-platform-and-stack]] unchanged): CI keeps the APK compiling, and the open Android checks below are done whenever a phone turns up.
 - [ ] Hello tone on a real Android phone (M0)

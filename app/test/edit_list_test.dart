@@ -92,4 +92,44 @@ void main() {
       expect(h.canUndo, isFalse);
     });
   });
+
+  group('tune (M4)', () {
+    test('edits keep the tune; tune is part of equality and JSON', () {
+      final tuned = whole.withTune(const Tune(semitones: 3.25, tempo: 1.2));
+      expect(tuned.split(10).delete(0, 5).tune, tuned.tune);
+      expect(tuned == whole, isFalse);
+      expect(tuned.isWhole(1000), isFalse);
+      expect(EditList.fromJsonString(tuned.toJsonString()), tuned);
+    });
+
+    test('version-1 files (M3) load with no transpose', () {
+      const v1 = '{"version":1,"clips":[{"start":0,"end":500,"gain":1.0}]}';
+      expect(EditList.fromJsonString(v1).tune, Tune.none);
+    });
+
+    test('values are clamped to the allowed ranges', () {
+      final t = Tune.none.copyWith(semitones: 30, tempo: 2);
+      expect(t.semitones, 24);
+      expect(t.tempo, 1.5);
+      expect(Tune.none.copyWith(tempo: 0.5).tempo, 0.75);
+    });
+
+    test('repeated pitch taps coalesce into one undo step', () {
+      final h = EditHistory(whole);
+      for (var st = 1; st <= 5; st++) {
+        h.push(
+          'Pitch',
+          h.current.withTune(Tune(semitones: st.toDouble())),
+          coalesce: true,
+        );
+      }
+      expect(h.current.tune.semitones, 5);
+      expect(h.undo(), whole);
+      expect(h.canUndo, isFalse);
+      // Tapping back to the start removes the step.
+      h.redo();
+      h.push('Pitch', h.current.withTune(Tune.none), coalesce: true);
+      expect(h.canUndo, isFalse);
+    });
+  });
 }

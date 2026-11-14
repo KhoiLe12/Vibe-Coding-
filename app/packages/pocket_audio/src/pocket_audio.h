@@ -180,6 +180,16 @@ PS_EXPORT int64_t ps_player_set_clips(const int64_t* src_starts,
                                       const int64_t* src_ends,
                                       const float* gains, int32_t count);
 
+// Like ps_player_set_clips, but the clips index into source_path (a mono
+// float WAV, e.g. a transposed render of the take, M4) instead of the
+// recording. NULL/"" = the recording. Swaps atomically like an edit. Returns
+// the new timeline length, or -1 if the source can't be opened.
+PS_EXPORT int64_t ps_player_set_source_clips(const char* source_path,
+                                             const int64_t* src_starts,
+                                             const int64_t* src_ends,
+                                             const float* gains,
+                                             int32_t count);
+
 // Nearest zero crossing in the open take's recording within ±radius frames
 // of src_frame, or src_frame if there is none (used to snap cuts).
 PS_EXPORT int64_t ps_player_zero_crossing(int64_t src_frame, int32_t radius);
@@ -209,6 +219,31 @@ PS_EXPORT void ps_player_render_offline(float* out, int32_t frames,
 // Rebuilds a take's peaks file from its WAV (e.g. after a crash). Slow for
 // long takes: call off the UI thread. Returns PS_OK or PS_ERROR_FILE.
 PS_EXPORT int32_t ps_peaks_build(const char* wav_path, const char* peaks_path);
+
+// ---- DSP processor (M4) --------------------------------------------------
+// Offline pitch/time render with Signalsmith Stretch on a worker thread
+// (wiki/components/dsp-processor.md). Renders frames [start, end) of a mono
+// float WAV into a new mono float WAV of exactly round((end-start)/tempo)
+// frames, transposed by semitones (fractional = cents); formant != 0 keeps
+// formants (voice). The file appears only when complete. One job at a time:
+// starting one cancels the previous.
+
+#define PS_RENDER_IDLE 0
+#define PS_RENDER_RUNNING 1
+#define PS_RENDER_DONE 2
+#define PS_RENDER_FAILED 3
+#define PS_RENDER_CANCELLED 4
+
+// Returns the new job's id (> 0), or -1 on bad arguments.
+PS_EXPORT int32_t ps_render_start(const char* input, int64_t start,
+                                  int64_t end, const char* output,
+                                  double semitones, double tempo,
+                                  int32_t formant);
+PS_EXPORT void ps_render_cancel(void);
+// Id, state (PS_RENDER_*) and progress (0..1) of the latest job.
+PS_EXPORT int32_t ps_render_job(void);
+PS_EXPORT int32_t ps_render_state(void);
+PS_EXPORT double ps_render_progress(void);
 
 // ---- Latency probe (M2 go/no-go gate) ------------------------------------
 // wiki/decisions/d008-latency-gate-route.md. While running, a 5 ms chirp is

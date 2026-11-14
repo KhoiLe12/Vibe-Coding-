@@ -148,3 +148,22 @@
 - pages touched: [[chop]], [[undo-history]], [[overview]]
 - notes: Human confirmed the usability fixes (zoom after trim/undo, block selection, jump to start). Both chop criteria ticked;
   undo-history gained criteria (session undo ✓, persisted history → M7).
+
+## [2026-11-14] decision | Transpose applies to the whole take (M4)
+- pages touched: [[q-transpose-scope]]
+- notes: Human chose whole-take transpose; per-clip stays in the backlog. CI run 43542562901 green for 4de0b32 (M3).
+
+## [2026-11-14] decision | M4 transpose & tempo design
+- pages touched: [[d013-transpose-tempo-design]], [[tempo]], [[transpose]], [[index]]
+- notes: Human: tempo 75–150% (narrows the plan's 50–200%), formant off by default, approved tempo criteria.
+  Signalsmith Stretch is at 1.4.0 (MIT) with formant compensation; it needs Signalsmith Linear.
+
+## [2026-11-14] build | M4 transpose & tempo built
+- pages touched: [[dsp-processor]], [[audio-engine]], [[storage]], [[transpose]], [[tempo]], [[d013-transpose-tempo-design]]
+- notes: Vendored Signalsmith Stretch 1.4.0 + Linear 0.6.4 (MIT). Found presetDefault up to 12 cents sharp at -24 st → 240 ms blocks.
+  Renderer, render cache, player sources, tune in the edit state, pitch/tempo sheet. 58 core + 23 app tests. Installed on iPhone.
+
+## [2026-11-14] build | M4 done on iOS
+- pages touched: [[transpose]], [[tempo]], [[overview]]
+- notes: Human: renders 0.6–1 s, switch-over in place, formant toggle works to ±5 st, attacks crisp, UI responsive, editing while
+  transposed fine. Mid-range render-speed criterion left open (only a high-end iPhone available).

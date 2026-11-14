@@ -5,6 +5,8 @@
 // project folder, "inbox":
 //   <documents>/projects/inbox/sources/<id>.wav   immutable recordings
 //   <documents>/projects/inbox/peaks/<id>.bin     waveform caches (rebuildable)
+//   <documents>/projects/inbox/renders/<id>_*.wav transposed/stretched renders
+//                                                  (disposable cache, M4)
 //   <documents>/projects/inbox/edits/<id>.json    edit list (absent = unedited;
 //                                                  wiki/decisions/d012-chop-model.md)
 
@@ -15,6 +17,7 @@ import 'dart:typed_data';
 import 'package:pocket_audio/pocket_audio.dart';
 
 import '../edit/edit_list.dart';
+import '../edit/render_cache.dart';
 
 /// Header size of the WAVs our recorder writes (RIFF + fmt + fact + data).
 const _wavHeaderBytes = 58;
@@ -76,7 +79,8 @@ class TakeStore {
   TakeStore(Directory projectDir)
     : sources = Directory('${projectDir.path}/sources'),
       peaksDir = Directory('${projectDir.path}/peaks'),
-      editsDir = Directory('${projectDir.path}/edits') {
+      editsDir = Directory('${projectDir.path}/edits'),
+      renders = RenderCache(Directory('${projectDir.path}/renders')) {
     sources.createSync(recursive: true);
     peaksDir.createSync(recursive: true);
     editsDir.createSync(recursive: true);
@@ -85,6 +89,9 @@ class TakeStore {
   final Directory sources;
   final Directory peaksDir;
   final Directory editsDir;
+
+  /// Transposed / stretched renders (disposable cache, M4).
+  final RenderCache renders;
 
   /// Takes, newest first.
   List<Take> list() {
@@ -178,6 +185,7 @@ class TakeStore {
     if (take.peaks.existsSync()) take.peaks.deleteSync();
     final e = editsFile(take.id);
     if (e.existsSync()) e.deleteSync();
+    renders.deleteFor(take.id);
   }
 
   static DateTime? _createdFromId(String id) {

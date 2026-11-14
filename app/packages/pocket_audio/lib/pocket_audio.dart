@@ -8,6 +8,7 @@
 library;
 
 import 'dart:ffi' as ffi;
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -252,32 +253,35 @@ abstract final class PocketAudio {
   static int get playbackPosition => bindings.ps_player_position();
   static int get takeLength => bindings.ps_player_length();
 
-  /// Replaces the edit list with clips over the open take's recording
-  /// (`(start, end, gain)` in recording frames). Empty = the whole take.
-  /// Returns the timeline length.
-  static int setClips(List<({int start, int end, double gain})> clips) {
+  /// Replaces the edit list with clips `(start, end, gain)` over the open
+  /// take's recording — or, with [source], over another mono float WAV such
+  /// as a transposed render of it (M4). Empty = the whole source. Returns the
+  /// timeline length; throws if [source] can't be opened.
+  static int setClips(
+    List<({int start, int end, double gain})> clips, {
+    String? source,
+  }) {
     final n = clips.length;
-    if (n == 0) {
-      return bindings.ps_player_set_clips(
-        ffi.nullptr,
-        ffi.nullptr,
-        ffi.nullptr,
-        0,
-      );
-    }
-    final s = calloc<ffi.Int64>(n), e = calloc<ffi.Int64>(n);
-    final g = calloc<ffi.Float>(n);
+    final s = calloc<ffi.Int64>(math.max(1, n));
+    final e = calloc<ffi.Int64>(math.max(1, n));
+    final g = calloc<ffi.Float>(math.max(1, n));
+    final path = (source ?? '').toNativeUtf8();
     try {
       for (var i = 0; i < n; i++) {
         s[i] = clips[i].start;
         e[i] = clips[i].end;
         g[i] = clips[i].gain;
       }
-      return bindings.ps_player_set_clips(s, e, g, n);
+      final len = bindings.ps_player_set_source_clips(path.cast(), s, e, g, n);
+      if (len < 0) {
+        throw PocketAudioException(len, 'could not open $source for playback');
+      }
+      return len;
     } finally {
       calloc.free(s);
       calloc.free(e);
       calloc.free(g);
+      calloc.free(path);
     }
   }
 
@@ -376,4 +380,44 @@ abstract final class PocketAudio {
     double echoGain = 0.3,
     double noise = 0.01,
   }) => bindings.ps_latency_simulate(delayFrames, seconds, echoGain, noise);
+
+  // ---- DSP processor (M4) ----
+
+  /// Starts rendering frames [start, end) of [input] into [output],
+  /// transposed by [semitones] (fractional = cents) at [tempo] speed.
+  /// Cancels any running render. Returns the job id.
+  static int startRender({
+    required String input,
+    required int start,
+    required int end,
+    required String output,
+    double semitones = 0,
+    double tempo = 1,
+    bool formant = false,
+  }) {
+    final i = input.toNativeUtf8(), o = output.toNativeUtf8();
+    try {
+      return bindings.ps_render_start(
+        i.cast(),
+        start,
+        end,
+        o.cast(),
+        semitones,
+        tempo,
+        formant ? 1 : 0,
+      );
+    } finally {
+      calloc.free(i);
+      calloc.free(o);
+    }
+  }
+
+  static void cancelRender() => bindings.ps_render_cancel();
+  static int get renderJob => bindings.ps_render_job();
+  static RenderState get renderState =>
+      RenderState.values[bindings.ps_render_state()];
+  static double get renderProgress => bindings.ps_render_progress();
 }
+
+/// State of the latest render (matches PS_RENDER_*).
+enum RenderState { idle, running, done, failed, cancelled }
